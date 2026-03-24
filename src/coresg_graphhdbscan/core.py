@@ -1,4 +1,4 @@
-"""CoreSG-HDBSCAN core implementation extracted from the notebook."""
+"""CoreSG-HDBSCAN core implementation"""
 
 import time
 import warnings
