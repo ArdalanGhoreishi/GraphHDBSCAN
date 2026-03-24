@@ -11,7 +11,8 @@ import matplotlib.pyplot as plt
 import hdbscan
 from scipy.spatial.distance import cdist
 from scipy.spatial import distance
-from scipy.sparse import csr_matrix
+import scipy.sparse as sp
+from scipy.sparse import csr_matrix, triu
 from scipy.sparse.csgraph import minimum_spanning_tree
 from sklearn.cluster import HDBSCAN
 from sklearn.metrics import pairwise_distances
@@ -176,44 +177,82 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
 
         return P
 
-    def compute_similarity(self, graph):
-        if self.add_neighbor == True:
-            new_graph = nx.Graph()
-            nodes = list(graph.nodes())
-            for i, u in enumerate(nodes):
-                for v in nodes[i+1:]:
-                    neighbors_u = set(graph.neighbors(u)) | {u}
-                    neighbors_v = set(graph.neighbors(v)) | {v}
-                    common_neighbors = neighbors_u & neighbors_v
-                    numerator = 0
-                    for x in common_neighbors:
-                        weight_ux = graph[u][x]['weight'] if graph.has_edge(u, x) else (1 if u == x else 0)
-                        weight_vx = graph[v][x]['weight'] if graph.has_edge(v, x) else (1 if v == x else 0)
-                        numerator += weight_ux * weight_vx
-                    sum_u = sum((graph[u][x]['weight'] if graph.has_edge(u, x) else (1 if u == x else 0)) ** 2 for x in neighbors_u)
-                    sum_v = sum((graph[v][x]['weight'] if graph.has_edge(v, x) else (1 if v == x else 0)) ** 2 for x in neighbors_v)
-                    denominator = np.sqrt(sum_u) * np.sqrt(sum_v)
-                    similarity = numerator / denominator if denominator != 0 else 0
-                    if similarity > 0:
-                        new_graph.add_edge(u, v, weight=similarity)
-            return new_graph
+    def compute_similarity_sparse(self, graph) -> sp.csr_matrix:
+        """Fast weighted-structure similarity as a sparse matrix.
+
+        This is algebraically equivalent to the original ``compute_similarity``
+        implementation, but avoids Python-level all-pairs iteration. The
+        weighted adjacency vector for each node includes an explicit self-loop
+        of weight 1 before cosine normalization.
+        """
+        n = graph.number_of_nodes()
+        if n == 0:
+            return sp.csr_matrix((0, 0))
+
+        u_list, v_list, w_list = [], [], []
+        for u, v, d in graph.edges(data=True):
+            u_list.append(u)
+            v_list.append(v)
+            w_list.append(d.get("weight", 1.0))
+
+        if u_list:
+            u = np.asarray(u_list, dtype=np.int32)
+            v = np.asarray(v_list, dtype=np.int32)
+            w = np.asarray(w_list, dtype=np.float64)
+            rows = np.concatenate([u, v, np.arange(n, dtype=np.int32)])
+            cols = np.concatenate([v, u, np.arange(n, dtype=np.int32)])
+            data = np.concatenate([w, w, np.ones(n, dtype=np.float64)])
         else:
-            new_graph = nx.Graph()
+            rows = np.arange(n, dtype=np.int32)
+            cols = np.arange(n, dtype=np.int32)
+            data = np.ones(n, dtype=np.float64)
+
+        A = sp.csr_matrix((data, (rows, cols)), shape=(n, n))
+        A.eliminate_zeros()
+
+        norms = np.sqrt(np.asarray(A.multiply(A).sum(axis=1)).ravel())
+        norms[norms == 0.0] = 1.0
+        inv = 1.0 / norms
+
+        if not self.add_neighbor:
+            A_norm = A.multiply(inv[:, None]).tocsr()
+            out_rows, out_cols, out_data = [], [], []
             for u, v in graph.edges():
-                neighbors_u = set(graph.neighbors(u)) | {u}
-                neighbors_v = set(graph.neighbors(v)) | {v}
-                common_neighbors = neighbors_u & neighbors_v
-                numerator = 0
-                for x in common_neighbors:
-                    weight_ux = graph[u][x]['weight'] if graph.has_edge(u, x) else (1 if u == x else 0)
-                    weight_vx = graph[v][x]['weight'] if graph.has_edge(v, x) else (1 if v == x else 0)
-                    numerator += weight_ux * weight_vx
-                sum_u = sum((graph[u][x]['weight'] if graph.has_edge(u, x) else (1 if u == x else 0)) ** 2 for x in neighbors_u)
-                sum_v = sum((graph[v][x]['weight'] if graph.has_edge(v, x) else (1 if v == x else 0)) ** 2 for x in neighbors_v)
-                denominator = np.sqrt(sum_u) * np.sqrt(sum_v)
-                similarity = numerator / denominator if denominator != 0 else 0
-                new_graph.add_edge(u, v, weight=similarity)
-            return new_graph
+                sim = float(A_norm[u].multiply(A_norm[v]).sum())
+                out_rows.extend((u, v))
+                out_cols.extend((v, u))
+                out_data.extend((sim, sim))
+            S = sp.csr_matrix((out_data, (out_rows, out_cols)), shape=(n, n))
+            S.eliminate_zeros()
+            return S
+
+        numerators = (A @ A.T).tocsr()
+        S = numerators.multiply(inv[:, None]).multiply(inv[None, :]).tocsr()
+        S.setdiag(0.0)
+        S.eliminate_zeros()
+        return S
+
+    def compute_similarity(self, graph):
+        """Backward-compatible NetworkX wrapper over the sparse implementation."""
+        S = self.compute_similarity_sparse(graph)
+        if self.add_neighbor:
+            S = triu(S, k=1).tocsr()
+            if S.nnz:
+                mask = S.data > 0.0
+                if not np.all(mask):
+                    S = sp.csr_matrix((S.data[mask], S.indices[mask], S.indptr.copy()), shape=S.shape)
+                    S.eliminate_zeros()
+        out = nx.from_scipy_sparse_array(S, edge_attribute='weight')
+        out.add_nodes_from(range(graph.number_of_nodes()))
+        return out
+
+    @staticmethod
+    def similarity_to_dissimilarity_sparse(similarity_matrix: sp.csr_matrix) -> sp.csr_matrix:
+        D = similarity_matrix.copy().tocsr()
+        D.data = 1.0 - D.data
+        D.setdiag(0.0)
+        D.eliminate_zeros()
+        return D
 
     @staticmethod
     def similarity_to_dissimilarity(similarity_graph):
@@ -415,6 +454,22 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
 
 
     @staticmethod
+    def dense_from_sparse_edges_fill1(D_sparse: sp.csr_matrix) -> np.ndarray:
+        """Create the dense edge-distance matrix expected by CoreSG/HDBSCAN.
+
+        Non-edges are filled with 1, diagonal with 0, and sparse entries
+        overwrite the corresponding distances.
+        """
+        D_sparse = D_sparse.tocsr()
+        n = D_sparse.shape[0]
+        D = np.ones((n, n), dtype=np.float64)
+        np.fill_diagonal(D, 0.0)
+        coo = D_sparse.tocoo()
+        D[coo.row, coo.col] = coo.data
+        return np.minimum(D, D.T)
+
+
+    @staticmethod
     def reassign_noise_via_mst(mst_graph, labels0, c=5):
         """
         Reassign noise labels by propagating labels over a precomputed MST.
@@ -488,64 +543,46 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
     # ------------------------------------------------------------------
 
     def _build_graph_distance(self, X):
-        """
-        Build similarity graph → refined graph → connected graph → dense distance matrix.
-        """
+        """Build graph-derived dense distances using the sparse fast path."""
         self.data_ = X if self.sim_graph_method == 'precomputed' else (np.array(X) if isinstance(X, pd.DataFrame) else X)
 
-        # similarity graph (your method)
         self.similarity_graph_ = self.create_similarity_graph(self.data_)
+        self.similarity_graph_WSS_sparse_ = self.compute_similarity_sparse(self.similarity_graph_)
+        self.dissimilarity_graph_sparse_ = self.similarity_to_dissimilarity_sparse(self.similarity_graph_WSS_sparse_)
 
-        # WSS graph
-        self.similarity_graph_WSS = self.compute_similarity(self.similarity_graph_)
+        n_components, _ = sp.csgraph.connected_components(self.dissimilarity_graph_sparse_, directed=False)
+        if n_components <= 1:
+            self.dist_matrix_ = self.dense_from_sparse_edges_fill1(self.dissimilarity_graph_sparse_)
+            self.connected_graph_ = nx.from_scipy_sparse_array(self.dissimilarity_graph_sparse_, edge_attribute='weight')
+            self.connected_graph_.add_nodes_from(range(len(self.data_)))
+        else:
+            sparse_nx = nx.from_scipy_sparse_array(self.dissimilarity_graph_sparse_, edge_attribute='weight')
+            sparse_nx.add_nodes_from(range(len(self.data_)))
+            self.connected_graph_ = self.connect_graph_heuristically(sparse_nx, self.data_)
+            self.dist_matrix_ = self.compute_custom_distance_matrix(self.connected_graph_)
 
-        # dissimilarity = 1 - similarity
-        self.dissimilarity_graph_ = self.similarity_to_dissimilarity(self.similarity_graph_WSS)
-
-        # ensure connectivity
-        self.connected_graph_ = self.connect_graph_heuristically(
-            self.dissimilarity_graph_, self.data_
-        )
-
-        # final dense matrix (for CoreSG)
-        self.dist_matrix_ = self.compute_custom_distance_matrix(self.connected_graph_)
         self.mst_graph_ = nx.minimum_spanning_tree(self.connected_graph_, weight='weight')
+
+        self.similarity_graph_WSS = nx.from_scipy_sparse_array(self.similarity_graph_WSS_sparse_, edge_attribute='weight')
+        self.similarity_graph_WSS.add_nodes_from(range(len(self.data_)))
+        self.dissimilarity_graph_ = nx.from_scipy_sparse_array(self.dissimilarity_graph_sparse_, edge_attribute='weight')
+        self.dissimilarity_graph_.add_nodes_from(range(len(self.data_)))
 
     # ------------------------------------------------------------------
     # ------------------------- FIT ------------------------------------
     # ------------------------------------------------------------------
 
     def fit(self, X, y=None):
-        """
-        Build graph → dense distance matrix → run CoreSG on that matrix.
-        """
-        # 1) Build graph + D
-        self.data_ = X if self.sim_graph_method == 'precomputed' else np.array(X)
-        self.similarity_graph_ = self.create_similarity_graph(self.data_)
-        self.similarity_graph_WSS = self.compute_similarity(self.similarity_graph_)
-        self.dissimilarity_graph_ = self.similarity_to_dissimilarity(self.similarity_graph_WSS)
+        """Build graph-derived distances and run CoreSG on the dense matrix."""
+        self._build_graph_distance(X)
 
-        self.connected_graph_ = self.connect_graph_heuristically(
-            self.dissimilarity_graph_, self.data_
-        )
-
-        # edge-based dense matrix used by CoreSG/HDBSCAN
-        self.dist_matrix_ = self.compute_custom_distance_matrix(self.connected_graph_)
-        self.mst_graph_ = nx.minimum_spanning_tree(self.connected_graph_, weight='weight')
-
-        # 2) Create CoreSG wrapper
         self.coresg_ = CoreSGHDBSCAN(
-            min_samples_list=self.m_list,   # stored in __init__
+            min_samples_list=self.m_list,
             metric="precomputed",
             min_cluster_size=self.min_cluster_size,
         )
-
-        # 3) Fit Core-SG **using the graph distances**
         self.coresg_.fit_from_distance_matrix(self.dist_matrix_)
-
-        # 4) Run HDBSCAN pipeline for all m
         self.coresg_.run()
-
         return self
 
 
@@ -573,25 +610,9 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         return labels
 
     def fit_coresg(self, X, m_list, coresg_kwargs=None):
-        """
-        1) Build graph and dense distance matrix self.dist_matrix_
-        2) Run CoreSGHDBSCAN on that distance matrix
-        """
-        # --- 1) existing graph building ---
-        self.data_ = np.array(X) if isinstance(X, pd.DataFrame) else X
-        self.similarity_graph_ = self.create_similarity_graph(self.data_)
-        self.similarity_graph_WSS = self.compute_similarity(self.similarity_graph_)
-        self.dissimilarity_graph_ = self.similarity_to_dissimilarity(self.similarity_graph_WSS)
+        """Build graph-derived distances and run CoreSGHDBSCAN on them."""
+        self._build_graph_distance(X)
 
-        self.connected_graph_ = self.connect_graph_heuristically(
-            self.dissimilarity_graph_, self.data_
-        )
-
-        self.dist_matrix_ = self.compute_custom_distance_matrix(
-            self.connected_graph_
-        )
-
-        # --- 2) CoreSG on the graph distance matrix ---
         if coresg_kwargs is None:
             coresg_kwargs = {}
 
@@ -600,10 +621,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             min_cluster_size=self.min_cluster_size,
             **coresg_kwargs
         ).fit_from_distance_matrix(self.dist_matrix_)
-
-        # run the full HDBSCAN pipeline for all m
         self.coresg_.run()
-
         return self
 
 
