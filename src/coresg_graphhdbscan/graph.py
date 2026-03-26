@@ -115,68 +115,6 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         m = int(m)
         return m if self.min_cluster_size is None else int(self.min_cluster_size)
 
-
-    @staticmethod
-    def compute_tsne_affinities(data, perplexity, tol=1e-5, max_iter=50):
-        """
-        Compute the conditional probability matrix (affinities) as used in t-SNE.
-
-        Parameters:
-          data: numpy array (n_samples x n_features)
-          perplexity: target perplexity (a positive float)
-          tol: tolerance for the binary search (default: 1e-5)
-          max_iter: maximum iterations of binary search per point
-
-        Returns:
-          P: numpy array (n x n) with conditional probabilities (with zeros on diagonal)
-        """
-        n = data.shape[0]
-        # Compute pairwise squared Euclidean distances.
-        distances = pairwise_distances(data, squared=True)
-        P = np.zeros((n, n))
-        logU = np.log(perplexity)
-
-        # Loop over all data points.
-        for i in range(n):
-            # Exclude the i-th element.
-            mask = np.ones(n, dtype=bool)
-            mask[i] = False
-            Di = distances[i, mask]
-
-            # Initialize binary search for beta = 1/(2*sigma^2)
-            beta = 1.0
-            betamin = -np.inf
-            betamax = np.inf
-
-            # Binary search to get the correct entropy.
-            for _ in range(max_iter):
-                # Compute the conditional probabilities for point i.
-                P_i = np.exp(-Di * beta)
-                sumP_i = np.sum(P_i)
-                if sumP_i == 0:
-                    sumP_i = 1e-10
-                P_i = P_i / sumP_i
-                # Shannon entropy in natural log.
-                H = -np.sum(P_i * np.log(P_i + 1e-10))
-                Hdiff = H - logU
-                # Check for convergence.
-                if np.abs(Hdiff) < tol:
-                    break
-                # Adjust beta based on whether the entropy is too high or too low.
-                if Hdiff > 0:  # entropy too high, increase beta (reduce sigma)
-                    betamin = beta
-                    beta = beta * 2.0 if betamax == np.inf else (beta + betamax) / 2.0
-                else:          # entropy too low, decrease beta (increase sigma)
-                    betamax = beta
-                    beta = beta / 2.0 if betamin == -np.inf else (beta + betamin) / 2.0
-
-            # Fill the conditional probabilities for the i-th row.
-            # Note: Insert zeros for the self-affinity.
-            inds = np.arange(n)[mask]
-            P[i, inds] = P_i
-
-        return P
-
     def compute_similarity_sparse(self, graph) -> sp.csr_matrix:
         """Fast weighted-structure similarity as a sparse matrix.
 
@@ -319,7 +257,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
                     distances_full,
                     n_neighbors=self.n_neighbors - 1,
                     mode='distance',
-                    metric=knn_metric,
+                    metric='cosine',
                     include_self=False,
                 )
 
@@ -344,7 +282,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
                     distances_full,
                     n_neighbors=self.n_neighbors - 1,
                     mode='distance',
-                    metric=knn_metric,
+                    metric='cosine',
                     include_self=False,
                 )
             conn = sc_gauss(knn_dist, n_neighbors=self.n_neighbors, knn=True)
