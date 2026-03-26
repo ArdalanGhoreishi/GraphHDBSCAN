@@ -316,7 +316,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
                 )
             else:
                 knn_dist = kneighbors_graph(
-                    X,
+                    distances_full,
                     n_neighbors=self.n_neighbors - 1,
                     mode='distance',
                     metric=knn_metric,
@@ -341,7 +341,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
                 )
             else:
                 knn_dist = kneighbors_graph(
-                    X,
+                    distances_full,
                     n_neighbors=self.n_neighbors - 1,
                     mode='distance',
                     metric=knn_metric,
@@ -625,8 +625,8 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         return self
 
 
-   # ------------------------------------------------------------------
-    # -------------------------- ACCESSORS ------------------------------
+    # ------------------------------------------------------------------
+    # -------------------------- ACCESSORS -----------------------------
     # ------------------------------------------------------------------
 
     def labels_for(self, m, no_noise=None, c=5):
