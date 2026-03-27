@@ -32,10 +32,23 @@ from hdbscan.plots import CondensedTree as _CondensedTree, SingleLinkageTree as 
 # ===========================================
 def prim_mrd_mst_edges(X: np.ndarray, core: np.ndarray) -> np.ndarray:
     """
-    Exact MST of COMPLETE graph with weights:
-      w(i,j) = max(core[i], core[j], ||xi-xj||)
-    Returns edges as (n-1,2) with i<j.
+    Compute MST edges on a mutual-reachability graph using Prim's algorithm.
+
+    Parameters
+    ----------
+    D : numpy.ndarray
+        Dense pairwise distance matrix.
+    core : numpy.ndarray
+        Core-distance vector.
+    eps : float, default=1e-12
+        Numerical tolerance.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of undirected MST edges with shape ``(n_edges, 2)``.
     """
+    
     X = np.asarray(X, dtype=np.float64, order="C")
     n = X.shape[0]
     in_tree = np.zeros(n, dtype=bool)
@@ -67,11 +80,21 @@ def prim_mrd_mst_edges(X: np.ndarray, core: np.ndarray) -> np.ndarray:
 
 def prim_mrd_mst_edges_from_D(D: np.ndarray, core: np.ndarray) -> np.ndarray:
     """
-    Exact MST of COMPLETE graph with weights
-        w(i,j) = max(core[i], core[j], D[i,j])
-    using a precomputed distance matrix D (NxN).
+    Compute MST edges from a precomputed distance matrix.
 
-    Returns edges as (n-1, 2) with i<j.
+    Parameters
+    ----------
+    D : numpy.ndarray
+        Dense pairwise distance matrix.
+    core : numpy.ndarray
+        Core-distance vector.
+    eps : float, default=1e-12
+        Numerical tolerance.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of undirected MST edges with shape ``(n_edges, 2)``.
     """
     D = np.asarray(D, dtype=np.float64, order="C")
     n = D.shape[0]
@@ -115,12 +138,20 @@ def prim_mrd_mst_edges_from_D(D: np.ndarray, core: np.ndarray) -> np.ndarray:
 # ===========================================
 class CoreSGModel:
     """
-    Lightweight object mimicking the parts of hdbscan.HDBSCAN you care about:
-      - labels_
-      - probabilities_
-      - cluster_persistence_
-      - condensed_tree_.plot(...)
-      - single_linkage_tree_
+    Lightweight wrapper that mimics the HDBSCAN attributes used by this package.
+
+    Attributes
+    ----------
+    labels_ : numpy.ndarray
+        Cluster labels for each sample.
+    probabilities_ : numpy.ndarray
+        Membership strengths for each sample.
+    cluster_persistence_ : numpy.ndarray
+        Persistence score for each cluster.
+    condensed_tree_ : object
+        Condensed tree wrapper with plotting support.
+    single_linkage_tree_ : object
+        Single-linkage tree wrapper.
     """
 
     def __init__(self,
@@ -142,28 +173,35 @@ class CoreSGModel:
 @dataclass
 class CoreSGHDBSCAN:
     """
-    CORE-SG multi-HDBSCAN using the generic HDBSCAN pipeline + your fast MST logic:
+    CORE-SG multi-HDBSCAN implementation using the generic HDBSCAN pipeline
+    together with the package's faster MST logic.
 
-    1. Compute full Euclidean distance matrix D once.
-    2. Compute self-inclusive core distances for all m in min_samples_list using
-       kNN with self included (NearestNeighbors).
-    3. Build CORE-SG graph:
-         - kmax-NNG with ALL ties: edge (i,j) if
-             D[i,j] <= core_kmax[i] + eps  OR  D[i,j] <= core_kmax[j] + eps
-         - MST(kmax) on COMPLETE MRD_kmax via dense Prim (prim_mrd_mst_edges)
-         - CORE-SG edges = union( kmax-NNG-with-ties , MST(kmax) ).
-    4. Precompute a CSR neighbor table A from kNN (without self) for fast base
-       distances per edge.
-    5. For each m:
-         - For each CORE-SG edge (r,c), compute base distance:
-             - if (r,c) or (c,r) is in the kNN table -> use that,
-             - else fallback to D[r,c].
-           Then MRD_m(i,j) = max(core_m[i], core_m[j], base).
-         - Build sparse symmetric graph with those MRD_m weights.
-         - Compute MST_m via csgraph.minimum_spanning_tree.
-         - Convert MST_m -> single_linkage_tree via hdbscan._hdbscan_linkage.label.
-         - Run condense_tree + compute_stability + get_clusters to get labels,
-           probabilities, condensed_tree.
+    Workflow
+    --------
+    1. Compute the full distance matrix once.
+    2. Compute self-inclusive core distances for all values in
+       ``min_samples_list``.
+    3. Build the CORE-SG graph from:
+       - the kmax nearest-neighbor graph with ties
+       - the MST on the complete MRD graph for kmax
+    4. Precompute a sparse neighbor table for fast edge distance lookup.
+    5. For each ``m``:
+       - compute MRD edge weights
+       - build the sparse weighted graph
+       - compute the MST
+       - build the single-linkage tree
+       - condense the tree and extract clusters
+
+    Parameters
+    ----------
+    min_samples_list : list[int]
+        List of ``min_samples`` values to evaluate.
+    metric : str, default="euclidean"
+        Distance metric mode.
+    eps : float, default=1e-12
+        Numerical tolerance used in graph construction.
+    min_cluster_size : int or None, default=None
+        Minimum cluster size. If ``None``, the package default behavior is used.
     """
 
     min_samples_list: List[int]
