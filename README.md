@@ -77,3 +77,6 @@ Current public constructor parameters:
 You can alsp pass an already-built similarity graph with `sim_graph_method="precomputed"`.
 The input to `fit(...)` may be a NetworkX graph, a scipy sparse adjacency matrix, or a square dense adjacency matrix.
 
+## Third-party software
+
+This package uses third-party open-source dependencies, including hdbscan, scanpy, and PhenoGraph. See `THIRD_PARTY_NOTICES.md` for details.
