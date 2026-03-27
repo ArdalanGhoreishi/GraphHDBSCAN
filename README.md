@@ -2,7 +2,15 @@
 
 Installable package version of the CoreSG + GraphHDBSCAN.
 
-## Install locally
+## Installation
+
+### Install from GitHub
+
+```bash
+pip install git+https://github.com/Campello-Lab/GraphHDBSCAN.git
+```
+
+### Install locally
 
 ```bash
 pip install -e .
