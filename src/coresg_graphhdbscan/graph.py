@@ -375,8 +375,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
 
     @staticmethod
     def compute_custom_distance_matrix(graph):
-        """
-        Compute the pairwise distance matrix used by the graph-based pipeline.
+        """Compute the pairwise distance matrix used by the graph-based pipeline.
     
         Parameters
         ----------
