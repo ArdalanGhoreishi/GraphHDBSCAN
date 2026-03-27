@@ -1,6 +1,6 @@
 # coresg-graphhdbscan
 
-Installable package version of the CoreSG + GraphHDBSCAN*.
+Installable package version of the CoreSG + GraphHDBSCAN*
 
 ## Installation
 
