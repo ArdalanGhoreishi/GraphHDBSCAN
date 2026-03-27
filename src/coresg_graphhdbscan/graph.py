@@ -376,11 +376,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
     @staticmethod
     def compute_custom_distance_matrix(graph):
         """
-        Compute the distance matrix used by the graph-based clustering pipeline.
-        Compute a dense distance matrix where for each pair of nodes:
-          - The distance is the edge weight if an edge exists.
-          - Otherwise, the distance is set to max distance(1).
-        The diagonal is set to 0.
+        Compute the pairwise distance matrix used by the graph-based pipeline.
     
         Parameters
         ----------
