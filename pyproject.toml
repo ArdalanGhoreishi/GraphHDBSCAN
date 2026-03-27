@@ -9,7 +9,7 @@ description = "CoreSG + GraphHDBSCAN clustering package"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-  {name = "OpenAI package scaffold from notebook"},
+  {name = "S. A. Ghoreishi"},
 ]
 dependencies = [
   "numpy>=1.23",
