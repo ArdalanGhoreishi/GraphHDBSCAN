@@ -451,7 +451,7 @@ class CoreSGHDBSCAN:
     def run(self,
             cluster_selection_method: str = "eom",
             allow_single_cluster: bool = False,
-            match_reference_implementation: bool = True,
+            match_reference_implementation: bool = False,
             cluster_selection_epsilon: float = 0.0) -> "CoreSGHDBSCAN":
 
         if self.D_ is None or self.edges_ut_ is None or not self.core_:
