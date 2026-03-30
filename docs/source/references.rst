@@ -12,8 +12,8 @@ Main package reference
 method described in the following original paper:
 
 Ghoreishi, S. A., Szmigiel, A. S., Nagai, J., Costa, I. G., Zimek, A., and Campello, R. J. G. B. (2026)
-*GraphHDBSCAN*: Graph-based Hierarchical Clustering.
-bioRxiv preprint, 2026.
+*GraphHDBSCAN\*: Graph-based Hierarchical Clustering on High Dimensional Single-cell RNA Sequencing Data*.
+*bioRxiv preprint*, 2026.
 Available at bioRxiv: ``10.64898/2026.03.24.713924v1``
 
 This is the primary reference for the package and should be cited when the
@@ -67,11 +67,12 @@ BibTeX
 .. code-block:: bibtex
 
    @article{ghoreishi2026graphhdbscan,
-     title={GraphHDBSCAN*: Graph-based Hierarchical Clustering},
-     author={Ghoreishi, S. A., Szmigiel, A. S., Nagai, J., Costa, I. G., Zimek, A., and Campello, R. J. G. B.},
+     title={GraphHDBSCAN*: Graph-based Hierarchical Clustering on High Dimensional Single-cell RNA Sequencing Data},
+     author={Ghoreishi, Seyed Ardalan and Szmigiel, Aleksandra Weronika and Nagai, James Shiniti and Gesteira Costa Filho, Ivan and Zimek, Arthur and Campello, Ricardo Jose Gabrielli Barreto},
      journal={bioRxiv},
+     pages={2026--03},
      year={2026},
-     note={bioRxiv preprint 10.64898/2026.03.24.713924v1}
+     publisher={Cold Spring Harbor Laboratory}
    }
 
    @inproceedings{campello2013density,
