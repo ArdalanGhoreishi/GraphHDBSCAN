@@ -2,6 +2,12 @@
 
 Installable package version of the CoreSG + GraphHDBSCAN*
 
+## Documentation
+
+Full documentation is available here:
+
+[GraphHDBSCAN* Documentation](https://graphhdbscan.readthedocs.io/en/latest/)
+
 ## Installation
 
 ### Install from GitHub
