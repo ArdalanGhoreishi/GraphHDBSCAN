@@ -83,6 +83,15 @@ Current public constructor parameters:
 You can alsp pass an already-built similarity graph with `sim_graph_method="precomputed"`.
 The input to `fit(...)` may be a NetworkX graph, a scipy sparse adjacency matrix, or a square dense adjacency matrix.
 
+
+## Related paper
+
+The associated paper is available on bioRxiv: [https://www.biorxiv.org/content/10.64898/2026.03.24.713924v1](https://www.biorxiv.org/content/10.64898/2026.03.24.713924v1).
+
+## Data preparation
+
+To reproduce the results, first generate the input data by following the preprocessing instructions provided in the [Clustering-benchmarking-for-scRNAseq](https://github.com/Campello-Lab/Clustering-benchmarking-for-scRNAseq) repository.
+
 ## Third-party software
 
 This package uses third-party open-source dependencies, including hdbscan, scanpy, and PhenoGraph. See `THIRD_PARTY_NOTICES.md` for details.
