@@ -1,0 +1,5 @@
+sphinx>=8.0
+furo>=2024.8.6
+myst-nb>=1.1
+ipykernel
+nbformat
