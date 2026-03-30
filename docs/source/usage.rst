@@ -126,15 +126,38 @@ inspect.
 Interactive condensed tree
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-For live notebook work, the package also provides:
+For live notebook work, the package also provides an interactive condensed tree:
 
 .. code-block:: python
 
    widget = model.interactive_condensed_tree()
    widget
 
-This is most useful in a live Jupyter environment. In rendered documentation,
-the static condensed tree is usually more reliable than widget-based output.
+This view lets you change ``min_samples`` interactively and inspect the
+corresponding condensed tree without refitting the model. It is useful when you
+fit several ``min_samples`` values in one run and want to compare the resulting
+hierarchies visually.
+
+.. image:: ../_static/interactive_condensed_tree.png
+   :alt: Interactive condensed tree widget with a slider for min_samples and a condensed tree display.
+   :align: center
+   :width: 85%
+
+In this interface, the slider controls the selected value of ``min_samples``.
+As the selected value changes, the displayed condensed tree updates so that you
+can compare hierarchical structure across different density settings.
+
+A typical workflow is:
+
+.. code-block:: python
+
+   model = GraphCoreSGHDBSCAN(min_samples=range(2, 20))
+   model.fit(X)
+
+   widget = model.interactive_condensed_tree()
+   widget
+
+This feature is most useful in a live Jupyter environment. 
 
 Choosing a graph-construction backend
 -------------------------------------
