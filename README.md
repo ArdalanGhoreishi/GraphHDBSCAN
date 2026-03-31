@@ -90,7 +90,7 @@ The input to `fit(...)` may be a NetworkX graph, a scipy sparse adjacency matrix
 
 The associated paper is available on bioRxiv: [https://www.biorxiv.org/content/10.64898/2026.03.24.713924v1](https://www.biorxiv.org/content/10.64898/2026.03.24.713924v1).
 
-## Data preparation
+### Data preparation
 
 To reproduce the results, first generate the input data by following the preprocessing instructions provided in the [Clustering-benchmarking-for-scRNAseq](https://github.com/Campello-Lab/Clustering-benchmarking-for-scRNAseq) repository.
 
