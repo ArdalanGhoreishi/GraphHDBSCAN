@@ -29,7 +29,7 @@ from coresg_graphhdbscan import GraphCoreSGHDBSCAN
 
 model = GraphCoreSGHDBSCAN(
     min_samples=[5, 10, 15],
-    sim_graph_method="sc_umap",
+    sim_graph_method="sc_gauss",
     n_neighbors=10,
     no_noise=True,
     heuristic_connect=False,
