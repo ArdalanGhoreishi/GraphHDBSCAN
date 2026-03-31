@@ -28,7 +28,7 @@ pip install -e .
 from coresg_graphhdbscan import GraphCoreSGHDBSCAN
 
 model = GraphCoreSGHDBSCAN(
-    min_samples=10,
+    min_samples=[5, 10, 15],
     sim_graph_method="sc_umap",
     n_neighbors=10,
     no_noise=True,
@@ -38,7 +38,9 @@ model = GraphCoreSGHDBSCAN(
 )
 
 model.fit(X)
-labels = model.labels_for(5)
+labels_5 = model.labels_for(5)
+labels_10 = model.labels_for(10)
+labels_15 = model.labels_for(15)
 model.plot_condensed_tree(10)
 ```
 
