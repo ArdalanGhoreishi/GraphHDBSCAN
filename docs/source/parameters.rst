@@ -109,7 +109,7 @@ This is the main clustering hyperparameter. It may be:
 - an iterable of integers, such as ``[5, 10, 15]`` or ``range(2, 10)``
 
 Internally, the package converts it into an internal list of values used by
-CoreSG-HDBSCAN.
+CoreSGHDBSCAN.
 
 Examples:
 
@@ -323,7 +323,7 @@ Conceptually, this post-processing step:
 Practical recommendation:
 
 - use ``True`` if you prefer a full assignment with no final noise labels
-- use ``False`` if you want to preserve the original HDBSCAN-style noise behavior
+- use ``False`` if you want to preserve the original HDBSCAN*-style noise behavior
 
 ``min_cluster_size``
 ^^^^^^^^^^^^^^^^^^^^
