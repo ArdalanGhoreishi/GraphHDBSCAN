@@ -42,7 +42,7 @@ How they are used
    Graph representation and graph-based processing, including precomputed graph workflows.
 
 ``hdbscan``
-   HDBSCAN-style clustering outputs and related hierarchical clustering behavior.
+   HDBSCAN*-style clustering outputs and related hierarchical clustering behavior.
 
 ``scanpy``
    Graph construction backends such as ``sc_gauss`` and ``sc_umap``.
