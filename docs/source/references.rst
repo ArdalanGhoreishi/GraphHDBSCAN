@@ -19,7 +19,7 @@ Available at bioRxiv: ``10.64898/2026.03.24.713924v1``
 This is the primary reference for the package and should be cited when the
 package itself or the GraphHDBSCAN* method is used.
 
-Foundational HDBSCAN and hierarchical density estimation
+Foundational HDBSCAN* and hierarchical density estimation
 --------------------------------------------------------
 
 Campello, R. J., Moulavi, D., and Sander, J. (2013).
@@ -56,7 +56,7 @@ primary reference.
 
 Depending on the workflow, it may also be appropriate to cite:
 
-- the foundational HDBSCAN and hierarchical density estimation papers
+- the foundational HDBSCAN* and hierarchical density estimation papers
 - the ``hdbscan`` software paper
 - ``SCANPY`` when using Scanpy-based graph construction
 - ``CosTaL`` when using PhenoGraph-based graph construction
