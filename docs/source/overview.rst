@@ -7,7 +7,7 @@ graphs derived from tabular data or provided directly by the user.
 The package combines two main ideas:
 
 1. construction of a weighted graph that reflects local similarity structure
-2. application of a CoreSG-HDBSCAN pipeline on a graph-derived distance representation
+2. application of a CoreSGHDBSCAN pipeline on a graph-derived distance representation
 
 This package is designed for settings where Euclidean geometry alone is not the
 desired representation, and where clustering should instead be guided by a
@@ -24,7 +24,7 @@ The package currently supports the following capabilities:
 - three metric modes: ``euclidean``, ``cosine``, and ``hybrid_euclidean_cosine``
 - optional relabeling of noise points by MST-based propagation
 - compatibility with NetworkX graphs, dense adjacency matrices, and sparse adjacency matrices in precomputed mode
-- access to HDBSCAN-style outputs such as labels, probabilities, and condensed trees
+- access to HDBSCAN*-style outputs such as labels, probabilities, and condensed trees
 
 Package structure
 -----------------
@@ -37,7 +37,7 @@ The package is centered around two public classes:
 
 ``GraphCoreSGHDBSCAN``
    The graph-oriented wrapper that constructs a graph, converts it to a
-   graph-derived distance representation, and then runs CoreSG-HDBSCAN.
+   graph-derived distance representation, and then runs CoreSGHDBSCAN.
 
 For most users, ``GraphCoreSGHDBSCAN`` is the main entry point.
 
@@ -49,7 +49,7 @@ This package is especially useful when:
 - Euclidean distance alone is not the best description of local structure
 - a similarity graph is more meaningful than a raw feature-space view
 - you want to compare several ``min_samples`` values efficiently in one run
-- you want HDBSCAN-style hierarchical clustering behavior on top of a graph-based representation
+- you want HDBSCAN*-style hierarchical clustering behavior on top of a graph-based representation
 - you already have a graph or adjacency matrix and want to cluster directly from it
 
 Typical workflow
@@ -61,7 +61,7 @@ A typical graph-based clustering workflow in this package is:
 2. convert it into a weighted structural similarity graph
 3. convert similarity to dissimilarity
 4. ensure graph connectivity
-5. run CoreSG-HDBSCAN for one or more ``min_samples`` values
+5. run CoreSGHDBSCAN for one or more ``min_samples`` values
 6. inspect the condensed tree and choose a solution
 7. optionally reassign noise points if ``no_noise=True``
 
