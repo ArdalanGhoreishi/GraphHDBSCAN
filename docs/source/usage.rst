@@ -322,7 +322,7 @@ MST-based propagation step after clustering.
        no_noise=True,
    )
 
-If you want to preserve the original HDBSCAN-style noise labels, disable it:
+If you want to preserve the original HDBSCAN*-style noise labels, disable it:
 
 .. code-block:: python
 
@@ -340,7 +340,7 @@ After fitting, users commonly inspect:
 - ``model.similarity_graph_WSS`` for the weighted structural similarity graph
 - ``model.dissimilarity_graph_`` for the graph after similarity-to-dissimilarity conversion
 - ``model.connected_graph_`` for the final connected graph
-- ``model.dist_matrix_`` for the dense matrix used by CoreSG-HDBSCAN
+- ``model.dist_matrix_`` for the dense matrix used by CoreSGHDBSCAN
 
 If you fit multiple ``min_samples`` values, retrieve a selected solution with:
 
