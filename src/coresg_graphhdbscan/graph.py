@@ -45,6 +45,69 @@ def _get_scanpy_modules():
 
 
 class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
+    """
+    Graph-based CoreSG + HDBSCAN interface.
+
+    This class constructs a similarity graph from feature data or accepts a
+    precomputed graph representation, transforms that graph into a
+    graph-derived distance representation, and then runs the CoreSG-HDBSCAN
+    clustering pipeline.
+
+    Parameters
+    ----------
+    min_samples : int or iterable of int, default=10
+        Main clustering hyperparameter. A single integer gives one fitted
+        solution, while an iterable allows fitting multiple values in one run.
+
+    sim_graph_method : {"sc_umap", "sc_gauss", "jaccard_phenograph", "precomputed"}, default="sc_umap"
+        Graph-construction backend.
+
+    metric : {"euclidean", "cosine", "hybrid_euclidean_cosine"}, default="euclidean"
+        Metric strategy used during graph construction.
+
+    add_neighbor : bool, default=True
+        Controls how weighted structural similarity is expanded into graph edges.
+
+    no_noise : bool, default=True
+        If True, points initially labeled as noise are reassigned after
+        clustering.
+
+    n_neighbors : int, default=15
+        Number of neighbors used during graph construction.
+
+    heuristic_connect : bool, default=False
+        If True, increase ``n_neighbors`` until the graph becomes connected.
+        If False, disconnected components are connected with synthetic bridge
+        edges.
+
+    min_cluster_size : int or None, default=None
+        Minimum cluster size used in the clustering stage. If None, the package
+        follows the selected ``min_samples`` value for each run.
+
+    **kwargs
+        Additional keyword arguments passed to internal graph-construction
+        helpers.
+
+    Attributes
+    ----------
+    similarity_graph_ : networkx.Graph
+        Initial similarity graph.
+
+    similarity_graph_WSS : networkx.Graph
+        Weighted structural similarity graph.
+
+    dissimilarity_graph_ : networkx.Graph
+        Graph after conversion from similarity to dissimilarity.
+
+    connected_graph_ : networkx.Graph
+        Final connected graph used by the clustering stage.
+
+    dist_matrix_ : numpy.ndarray
+        Dense matrix used by the CoreSG-HDBSCAN pipeline.
+
+    coresg_ : CoreSGHDBSCAN
+        Internal fitted CoreSG-HDBSCAN object.
+    """
     def __init__(self,
                  min_samples=10,
                  sim_graph_method='sc_umap',
@@ -517,7 +580,21 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
     # ------------------------------------------------------------------
 
     def fit(self, X, y=None):
-        """Build graph-derived distances and run CoreSG on the dense matrix."""
+        """
+        Fit the model on feature data or a precomputed graph.
+    
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features) or graph-like
+            Input feature matrix when ``sim_graph_method`` is not ``"precomputed"``.
+            In ``"precomputed"`` mode, this may be a ``networkx.Graph``, a SciPy
+            sparse adjacency matrix, or a square dense adjacency matrix.
+    
+        Returns
+        -------
+        self : GraphCoreSGHDBSCAN
+            Fitted estimator.
+        """
         self._build_graph_distance(X)
 
         self.coresg_ = CoreSGHDBSCAN(
@@ -533,6 +610,19 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
 
 
     def fit_predict(self, X, y=None, m=None, c=5, **fit_params):
+        """
+        Fit the model and return cluster labels.
+    
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features) or graph-like
+            Input feature matrix or supported precomputed graph representation.
+    
+        Returns
+        -------
+        numpy.ndarray
+            Cluster labels for the fitted solution.
+        """
         self.fit(X, y, **fit_params)
 
         if m is None:
@@ -574,6 +664,19 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
     # ------------------------------------------------------------------
 
     def labels_for(self, m, no_noise=None, c=5):
+        """
+        Return labels for a selected ``min_samples`` value.
+    
+        Parameters
+        ----------
+        m : int
+            Selected ``min_samples`` value.
+    
+        Returns
+        -------
+        numpy.ndarray
+            Cluster labels for the requested fitted solution.
+        """
         labels = self.coresg_.models_[m].labels_
 
         if no_noise is None:
@@ -589,7 +692,18 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
 
 
     def plot_condensed_tree(self, m=None, ax=None, figsize=(10, 6), **kwargs):
-        """Plot the condensed tree for a previously fitted ``m`` value."""
+        """
+        Plot the condensed tree for a selected ``min_samples`` value.
+    
+        Parameters
+        ----------
+        m : int
+            Selected ``min_samples`` value.
+    
+        Returns
+        -------
+        None
+        """
         if not hasattr(self, "coresg_"):
             raise RuntimeError("Call fit(...) first.")
 
@@ -618,15 +732,18 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         return ax
 
     def interactive_condensed_tree(self, X=None, figsize=(10, 6)):
-        """Interactive condensed-tree viewer that reuses the fitted CoreSG results.
-
-        Parameters
-        ----------
-        X : ignored, optional
-            Kept only for backward compatibility. The viewer uses the models
-            already computed by ``fit`` and does not refit.
-        figsize : tuple, default=(10, 6)
-            Figure size for the plot.
+        """
+        Create an interactive condensed tree explorer across fitted ``min_samples`` values.
+    
+        Returns
+        -------
+        ipywidgets.Widget
+            Interactive widget that lets users switch between fitted
+            ``min_samples`` values and inspect the corresponding condensed tree.
+    
+        Notes
+        -----
+        This feature is most useful in a live Jupyter environment.
         """
         try:
             import ipywidgets as widgets
