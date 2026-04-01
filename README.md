@@ -95,3 +95,10 @@ To reproduce the results, first generate the input data by following the preproc
 ## Third-party software
 
 This package uses third-party open-source dependencies, including hdbscan, scanpy, and PhenoGraph. See `THIRD_PARTY_NOTICES.md` for details.
+
+
+---
+
+## 📬 Contact
+
+For questions or support, please open an issue or contact: `ghoreishi@imada.sdu.dk`.
