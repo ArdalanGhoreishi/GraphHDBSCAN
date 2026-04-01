@@ -173,8 +173,10 @@ class CoreSGModel:
 @dataclass
 class CoreSGHDBSCAN:
     """
-    CORE-SG multi-HDBSCAN implementation using the generic HDBSCAN pipeline
-    together with the package's faster MST logic.
+    CoreSG-based hierarchical density clustering backend.
+
+    This class implements the lower-level CoreSG-HDBSCAN pipeline operating on
+    feature vectors or distance representations.
 
     Workflow
     --------
@@ -545,6 +547,20 @@ class CoreSGHDBSCAN:
 # Helper: plot condensed tree for any model dict
 # ===========================================
 def plot_condensed_tree_for_m(models_dict, m: int, title_prefix: str = "", figsize=(8, 5)):
+    """
+    Plot the condensed tree for a selected fitted ``min_samples`` value.
+
+    Parameters
+    ----------
+    model : CoreSGHDBSCAN or GraphCoreSGHDBSCAN
+        Fitted clustering object.
+    m : int
+        Selected ``min_samples`` value.
+
+    Returns
+    -------
+    None
+    """
     import matplotlib.pyplot as plt
     if m not in models_dict:
         raise KeyError(f"m={m} not found in models_dict")
