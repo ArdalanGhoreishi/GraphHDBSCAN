@@ -179,7 +179,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         return m if self.min_cluster_size is None else int(self.min_cluster_size)
 
     def compute_similarity_sparse(self, graph) -> sp.csr_matrix:
-        """Fast weighted-structure similarity as a sparse matrix.
+        """Fast weighted structural similarity as a sparse matrix.
 
         This is algebraically equivalent to the original ``compute_similarity``
         implementation, but avoids Python-level all-pairs iteration. The
