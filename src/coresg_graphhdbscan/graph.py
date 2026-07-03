@@ -930,7 +930,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             self.dist_matrix_ = self.compute_custom_distance_matrix(
                 self.connected_graph_
             )
-    
+        # TODO 7 and 8 are speed bottlenecks
         # ------------------------------------------------------------
         # 7. MST used later for optional noise reassignment
         # ------------------------------------------------------------
