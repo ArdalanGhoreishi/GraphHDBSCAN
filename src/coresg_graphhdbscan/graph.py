@@ -21,6 +21,8 @@ from sklearn.metrics.pairwise import rbf_kernel
 from sklearn.neighbors import NearestNeighbors as NN, kneighbors_graph
 import heapq
 import time
+import inspect
+import warnings
 from functools import wraps
 from collections.abc import Iterable
 try:
@@ -961,6 +963,44 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
     # ------------------------------------------------------------------
     # ------------------------- FIT ------------------------------------
     # ------------------------------------------------------------------
+    def _call_coresg_run(self):
+        """Call ``self.coresg_.run(...)`` forwarding only supported kwargs.
+
+        Different ``core.py`` revisions expose different ``run`` signatures:
+        the published repo version accepts ``cluster_selection_method`` but
+        not ``foscx_settings``; a newer revision accepts both. Instead of
+        hard-coding one, inspect the signature and pass only what fits, so
+        this file runs unmodified against either core.
+        """
+        desired = {
+            "cluster_selection_method": self.cluster_selection_method,
+            "foscx_settings": self.foscx_settings,
+        }
+        try:
+            params = inspect.signature(self.coresg_.run).parameters
+            accepts_var_kw = any(
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+            )
+        except (TypeError, ValueError):
+            params, accepts_var_kw = {}, False
+
+        if accepts_var_kw:
+            kwargs = dict(desired)
+        else:
+            kwargs = {k: v for k, v in desired.items() if k in params}
+
+        # Warn only if a *non-default* option is being silently dropped
+        # (an empty foscx_settings dict is falsy and thus never reported).
+        dropped = [k for k, v in desired.items() if k not in kwargs and v]
+        if dropped:
+            warnings.warn(
+                f"CoreSGHDBSCAN.run() does not accept {dropped}; these "
+                "options are ignored. Update core.py to enable them.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return self.coresg_.run(**kwargs)
+
     @_timeit
     def fit(self, X, y=None):
         """Fit the model on feature data or a precomputed graph."""
@@ -981,7 +1021,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         print(f"[TIMER] fit:coresg_.fit_from_distance_matrix: {time.perf_counter() - _t0:.4f}s")
 
         _t0 = time.perf_counter()
-        self.coresg_.run(cluster_selection_method=self.cluster_selection_method, foscx_settings=self.foscx_settings)
+        self._call_coresg_run()
         print(f"[TIMER] fit:coresg_.run: {time.perf_counter() - _t0:.4f}s")
 
         self.models_ = self.coresg_.models_
@@ -1127,4 +1167,3 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         redraw(m_list[0])
 
         return slider
-
