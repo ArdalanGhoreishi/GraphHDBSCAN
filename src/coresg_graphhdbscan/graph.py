@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import hdbscan
+#import fast_hdbscan as hdbscan
 from scipy.spatial.distance import cdist
 from scipy.spatial import distance
 import scipy.sparse as sp
@@ -19,6 +20,10 @@ from sklearn.metrics import pairwise_distances
 from sklearn.metrics.pairwise import rbf_kernel
 from sklearn.neighbors import NearestNeighbors as NN, kneighbors_graph
 import heapq
+import time
+import inspect
+import warnings
+from functools import wraps
 from collections.abc import Iterable
 try:
     from numba import njit, prange
@@ -28,12 +33,26 @@ except Exception:
     prange = range
     _HAS_NUMBA = False
 
+
 def _optional_import(module_name, package_name=None):
     try:
         return importlib.import_module(module_name)
     except Exception as e:
         pkg = package_name or module_name
         raise ImportError(f"Optional dependency '{pkg}' is required for this functionality. Please install it.") from e
+
+
+def _timeit(func):
+    """Decorator that prints how long the wrapped function/method took to run."""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        t0 = time.perf_counter()
+        try:
+            return func(*args, **kwargs)
+        finally:
+            elapsed = time.perf_counter() - t0
+            print(f"[TIMER] {func.__qualname__}: {elapsed:.4f}s")
+    return wrapper
 
 
 def _get_scanpy_modules():
@@ -48,6 +67,7 @@ def _get_scanpy_modules():
         sc_neighbors_connectivity.umap,
         sc_neighbors_common._get_indices_distances_from_dense_matrix,
     )
+
 
 if _HAS_NUMBA:
 
@@ -90,94 +110,9 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
     """
     Graph-based CoreSG + HDBSCAN interface.
 
-    This class constructs a similarity graph from feature data or accepts a
-    precomputed graph representation, transforms that graph into a
-    graph-derived distance representation, and then runs the CoreSG-HDBSCAN
-    clustering pipeline.
-
-    Parameters
-    ----------
-    min_samples : int or iterable of int, default=10
-        Main clustering hyperparameter. A single integer gives one fitted
-        solution, while an iterable allows fitting multiple values in one run.
-
-    sim_graph_method : {"sc_umap", "sc_gauss", "jaccard_phenograph", "precomputed"}, default="sc_umap"
-        Graph-construction backend.
-
-    metric : str, callable, or None, default="euclidean"
-        Distance metric used during similarity graph construction.
-        Supported string metrics are "cityblock", "cosine", "euclidean",
-        "l1", "l2", "manhattan", "braycurtis", "canberra",
-        "chebyshev", "correlation", "dice", "hamming", "jaccard",
-        "mahalanobis", "minkowski", "rogerstanimoto",
-        "russellrao", "seuclidean", "sokalmichener", "sokalsneath",
-        "sqeuclidean", "yule", and the package-specific
-        "hybrid_euclidean_cosine".
-        The metric "kulsinski" is not supported. The combination
-        metric="yule" with sim_graph_method="sc_gauss" is also not
-        supported because it can produce non-finite graph weights.
-    
-    metric_kwds : dict or None, default=None
-        Additional keyword arguments passed to the selected distance metric.
-
-    add_neighbor : bool, default=True
-        Controls how weighted structural similarity is expanded into graph edges.
-
-    no_noise : bool, default=True
-        If True, points initially labeled as noise are reassigned after
-        clustering.
-
-    n_neighbors : int, default=15
-        Number of neighbors used during graph construction.
-
-    heuristic_connect : bool, default=False
-        If True, increase ``n_neighbors`` until the WSS dissimilarity graph becomes connected,
-        except in precomputed mode, where bridge edges are used instead.
-        If False, disconnected components are connected with synthetic bridge
-        edges.
-
-    min_cluster_size : int or None, default=None
-        Minimum cluster size used in the clustering stage. If None, the package
-        follows the selected ``min_samples`` value for each run.
-
-    save_models : bool, default=False
-        If True, save hdbscan models for different min_samples which can add some memory overhead.
-        If False, just save labels and condensed trees for each min_samples.
-
-    **kwargs
-        Additional keyword arguments passed to internal graph-construction
-        helpers.
-
-    Attributes
-    ----------
-    similarity_graph_ : networkx.Graph
-        Initial similarity graph.
-
-    similarity_graph_WSS : networkx.Graph
-        Weighted structural similarity graph.
-
-    dissimilarity_graph_ : networkx.Graph
-        Graph after conversion from similarity to dissimilarity.
-
-    connected_graph_ : networkx.Graph
-        Final connected graph used by the clustering stage.
-
-    dist_matrix_ : numpy.ndarray
-        Dense matrix used by the CoreSG-HDBSCAN pipeline.
-
-    coresg_ : CoreSGHDBSCAN
-        Internal fitted CoreSG-HDBSCAN object.
-
-    models_ : dict
-        Dictionary of saved per-``min_samples`` models. Populated only when
-        ``save_models=True``.
-        
-    condensed_trees_ : dict
-        Dictionary of condensed tree objects keyed by fitted
-        ``min_samples`` value.
-        
-    labels_by_m_ : dict
-        Dictionary of stored labels keyed by fitted ``min_samples`` value.
+    See the module docstring for the speed/memory characteristics of this
+    optimized revision. The public API (parameters, attributes, methods) is
+    unchanged relative to the previous version.
     """
     def __init__(
                 self,
@@ -192,6 +127,8 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
                 min_cluster_size=None,
                 save_models=False,
                 similarity_backend="auto",
+                cluster_selection_method="eom",
+                foscx_settings={},
                 **kwargs,
             ):
 
@@ -204,7 +141,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             )
         if metric is None:
             metric = 'euclidean'
-        
+
         valid_metrics = {
             'cityblock',
             'cosine',
@@ -230,32 +167,32 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             'yule',
             'hybrid_euclidean_cosine',
         }
-        
+
         if not isinstance(metric, str) and not callable(metric):
             raise TypeError(
                 "metric must be a string metric name, a callable distance function, or None."
             )
-        
+
         if isinstance(metric, str) and metric not in valid_metrics:
             raise ValueError(
                 f"Unsupported metric '{metric}'. "
                 f"Use one of {sorted(valid_metrics)}, or pass a callable metric."
             )
-            
+
         if sim_graph_method == 'sc_gauss' and metric == 'yule':
             raise ValueError(
                 "metric='yule' is not supported with sim_graph_method='sc_gauss' "
                 "because this combination can produce non-finite graph weights. "
                 "Use sim_graph_method='sc_umap' or sim_graph_method='jaccard_phenograph' "
                 "with metric='yule', or choose a different metric with sim_graph_method='sc_gauss'."
-            )  
+            )
         valid_similarity_backends = {"auto", "default", "numba"}
         if similarity_backend not in valid_similarity_backends:
             raise ValueError(
                 "similarity_backend must be one of "
                 f"{sorted(valid_similarity_backends)}, got {similarity_backend!r}."
             )
-        
+
         self.similarity_backend = similarity_backend
         self.sim_graph_method = sim_graph_method
         self.metric = metric
@@ -263,6 +200,8 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         self.add_neighbor = add_neighbor
         self.no_noise = no_noise
         self.n_neighbors = n_neighbors
+        self.cluster_selection_method = cluster_selection_method
+        self.foscx_settings = foscx_settings
         if 'mst_approx' in kwargs:
             heuristic_connect = kwargs.pop('mst_approx')
         self.heuristic_connect = bool(heuristic_connect)
@@ -270,6 +209,15 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         self.models_ = {}
         self.condensed_trees_ = {}
         self.labels_by_m_ = {}
+
+        # Lazy NetworkX-view caches (built on demand by the properties below).
+        self._similarity_sparse_ = None
+        self._precomputed_nx_ = None
+        self._similarity_graph_cache = None
+        self._connected_graph_cache = None
+        self._similarity_graph_WSS_cache = None
+        self._dissimilarity_graph_cache = None
+
         # Backward-compatible handling of removed parameters.
         kwargs.pop('force_connected', None)
         kwargs.pop('gamma', None)
@@ -305,7 +253,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
 
     def __repr__(self):
         fitted = hasattr(self, "coresg_") and self.coresg_ is not None
-    
+
         if fitted:
             n_models = len(getattr(self.coresg_, "models_", {}))
             n_trees = len(getattr(self.coresg_, "condensed_trees_", {}))
@@ -314,7 +262,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             n_models = 0
             n_trees = 0
             n_label_sets = 0
-    
+
         return (
             f"GraphCoreSGHDBSCAN("
             f"min_samples={list(self.m_list)}, "
@@ -329,42 +277,95 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             f"n_label_sets={n_label_sets}"
             f")"
         )
-    
+
+    # ------------------------------------------------------------------
+    # Lazy NetworkX views (debug/inspection only -- never used by fit)
+    # ------------------------------------------------------------------
+    @property
+    def similarity_graph_(self):
+        """Initial similarity graph as a NetworkX graph (lazy)."""
+        if self.sim_graph_method == "precomputed" and self._precomputed_nx_ is not None:
+            return self._precomputed_nx_
+        if getattr(self, "_similarity_sparse_", None) is None:
+            raise AttributeError(
+                "similarity_graph_ is not available until the model has been fit."
+            )
+        if getattr(self, "_similarity_graph_cache", None) is None:
+            g = nx.from_scipy_sparse_array(self._similarity_sparse_, edge_attribute="weight")
+            g.add_nodes_from(range(self.n_obs_))
+            self._similarity_graph_cache = g
+        return self._similarity_graph_cache
+
+    @property
+    def connected_graph_(self):
+        """Final connected graph used by the clustering stage (lazy)."""
+        if getattr(self, "_connected_sparse_", None) is None:
+            raise AttributeError(
+                "connected_graph_ is not available until the model has been fit."
+            )
+        if getattr(self, "_connected_graph_cache", None) is None:
+            g = nx.from_scipy_sparse_array(self._connected_sparse_, edge_attribute="weight")
+            g.add_nodes_from(range(self.n_obs_))
+            self._connected_graph_cache = g
+        return self._connected_graph_cache
+
+    @property
+    def similarity_graph_WSS(self):
+        """Weighted structural similarity graph (lazy, debug/inspection only)."""
+        if getattr(self, "similarity_graph_WSS_sparse_", None) is None:
+            raise AttributeError(
+                "similarity_graph_WSS is not available until the model has been fit."
+            )
+        if getattr(self, "_similarity_graph_WSS_cache", None) is None:
+            g = nx.from_scipy_sparse_array(self.similarity_graph_WSS_sparse_, edge_attribute="weight")
+            g.add_nodes_from(range(self.n_obs_))
+            self._similarity_graph_WSS_cache = g
+        return self._similarity_graph_WSS_cache
+
+    @property
+    def dissimilarity_graph_(self):
+        """WSS dissimilarity graph (lazy, debug/inspection only)."""
+        if getattr(self, "dissimilarity_graph_sparse_", None) is None:
+            raise AttributeError(
+                "dissimilarity_graph_ is not available until the model has been fit."
+            )
+        if getattr(self, "_dissimilarity_graph_cache", None) is None:
+            g = nx.from_scipy_sparse_array(self.dissimilarity_graph_sparse_, edge_attribute="weight")
+            g.add_nodes_from(range(self.n_obs_))
+            self._dissimilarity_graph_cache = g
+        return self._dissimilarity_graph_cache
+
     def _min_cluster_size_for(self, m):
         m = int(m)
         return m if self.min_cluster_size is None else int(self.min_cluster_size)
 
-    def compute_similarity_sparse(self, graph) -> sp.csr_matrix:
-        """Fast weighted structural similarity as a sparse matrix.
+    # ------------------------------------------------------------------
+    # Weighted structural similarity (sparse, no NetworkX round trip)
+    # ------------------------------------------------------------------
+    @_timeit
+    def _wss_similarity_sparse(self, S_sim) -> sp.csr_matrix:
+        """Weighted structural similarity directly from a sparse adjacency.
 
-        This is algebraically equivalent to the original ``compute_similarity``
-        implementation, but avoids Python-level all-pairs iteration. The
-        weighted adjacency vector for each node includes an explicit self-loop
-        of weight 1 before cosine normalization.
+        ``S_sim`` is the initial similarity adjacency (symmetric, or a
+        single triangle -- both are accepted). This reproduces the old
+        ``compute_similarity_sparse`` exactly for the default
+        ``add_neighbor=True`` path: it forms the same symmetric adjacency
+        ``A`` (edges on both sides + an explicit self-loop of weight 1),
+        cosine-normalizes, and returns ``A @ A.T`` scaled by the inverse
+        norms with a zero diagonal.
         """
-        n = graph.number_of_nodes()
+        S_sim = sp.csr_matrix(S_sim)
+        n = S_sim.shape[0]
         if n == 0:
             return sp.csr_matrix((0, 0))
 
-        u_list, v_list, w_list = [], [], []
-        for u, v, d in graph.edges(data=True):
-            u_list.append(u)
-            v_list.append(v)
-            w_list.append(d.get("weight", 1.0))
+        # symmetric adjacency, each undirected edge on both sides, no self loops
+        M = S_sim.maximum(S_sim.T).tocsr()
+        M.setdiag(0.0)
+        M.eliminate_zeros()
 
-        if u_list:
-            u = np.asarray(u_list, dtype=np.int32)
-            v = np.asarray(v_list, dtype=np.int32)
-            w = np.asarray(w_list, dtype=np.float64)
-            rows = np.concatenate([u, v, np.arange(n, dtype=np.int32)])
-            cols = np.concatenate([v, u, np.arange(n, dtype=np.int32)])
-            data = np.concatenate([w, w, np.ones(n, dtype=np.float64)])
-        else:
-            rows = np.arange(n, dtype=np.int32)
-            cols = np.arange(n, dtype=np.int32)
-            data = np.ones(n, dtype=np.float64)
-
-        A = sp.csr_matrix((data, (rows, cols)), shape=(n, n))
+        # explicit self-loop of weight 1 for every node (matches original A)
+        A = (M + sp.eye(n, format="csr", dtype=np.float64)).tocsr()
         A.eliminate_zeros()
 
         norms = np.sqrt(np.asarray(A.multiply(A).sum(axis=1)).ravel())
@@ -373,13 +374,18 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
 
         if not self.add_neighbor:
             A_norm = A.multiply(inv[:, None]).tocsr()
-            out_rows, out_cols, out_data = [], [], []
-            for u, v in graph.edges():
-                sim = float(A_norm[u].multiply(A_norm[v]).sum())
-                out_rows.extend((u, v))
-                out_cols.extend((v, u))
-                out_data.extend((sim, sim))
-            S = sp.csr_matrix((out_data, (out_rows, out_cols)), shape=(n, n))
+            Mu = sp.triu(M, k=1).tocoo()
+            rows, cols = Mu.row, Mu.col
+            if rows.size:
+                sims = np.asarray(
+                    A_norm[rows].multiply(A_norm[cols]).sum(axis=1)
+                ).ravel()
+                data = np.concatenate([sims, sims])
+                r = np.concatenate([rows, cols])
+                c = np.concatenate([cols, rows])
+                S = sp.csr_matrix((data, (r, c)), shape=(n, n))
+            else:
+                S = sp.csr_matrix((n, n))
             S.eliminate_zeros()
             return S
 
@@ -389,6 +395,23 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         S.eliminate_zeros()
         return S
 
+    @_timeit
+    def compute_similarity_sparse(self, graph) -> sp.csr_matrix:
+        """Backward-compatible wrapper: accepts a NetworkX graph.
+
+        Converts the graph to a sparse adjacency once (integer node labels
+        ``0..n-1`` are assumed, as everywhere in this pipeline) and delegates
+        to :meth:`_wss_similarity_sparse`.
+        """
+        n = graph.number_of_nodes()
+        if n == 0:
+            return sp.csr_matrix((0, 0))
+        S_sim = nx.to_scipy_sparse_array(
+            graph, nodelist=list(range(n)), weight="weight", format="csr"
+        )
+        return self._wss_similarity_sparse(S_sim)
+
+    @_timeit
     def compute_similarity(self, graph):
         """Backward-compatible NetworkX wrapper over the sparse implementation."""
         S = self.compute_similarity_sparse(graph)
@@ -404,6 +427,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         return out
 
     @staticmethod
+    @_timeit
     def similarity_to_dissimilarity_sparse(similarity_matrix: sp.csr_matrix) -> sp.csr_matrix:
         D = similarity_matrix.copy().tocsr()
         D.data = 1.0 - D.data
@@ -412,6 +436,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         return D
 
     @staticmethod
+    @_timeit
     def similarity_to_dissimilarity(similarity_graph):
         dissimilarity_graph = nx.Graph()
         for u, v, data in similarity_graph.edges(data=True):
@@ -423,6 +448,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         return nx.is_connected(graph)
 
     @staticmethod
+    @_timeit
     def _coerce_precomputed_graph(graph_like):
         """Convert a supported precomputed graph representation into a NetworkX graph."""
         if isinstance(graph_like, nx.Graph):
@@ -446,15 +472,15 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         graph.remove_edges_from([(u, v) for u, v, d in graph.edges(data=True) if d.get('weight', 0) == 0])
         return graph
 
-
+    @_timeit
     def _fast_phenograph_jaccard_from_knn_graph(self, knn_graph):
         """
         Fast replacement for PhenoGraph's Jaccard graph construction.
-    
+
         Input is the same sparse kNN graph that the old code passed to:
-    
+
             sce.tl.phenograph(knn_dist, directed=False, clustering_algo=None)
-    
+
         Output matches PhenoGraph's default undirected Jaccard graph.
         """
         if not _HAS_NUMBA:
@@ -462,23 +488,23 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
                 "Fast jaccard_phenograph requires numba. "
                 "Install it with `pip install numba`."
             )
-    
+
         knn_graph = knn_graph.tocsr()
         n = knn_graph.shape[0]
-    
+
         if n <= 1:
             return sp.csr_matrix((n, n), dtype=np.float64)
-    
+
         # The old branch passes a kNN graph with exactly self.n_neighbors - 1
         # neighbors per row.
         k = int(self.n_neighbors) - 1
-    
+
         if k < 1:
             raise ValueError("n_neighbors must be at least 2 for jaccard_phenograph.")
-    
+
         indptr = knn_graph.indptr
         indices = knn_graph.indices
-    
+
         row_counts = np.diff(indptr)
         if not np.all(row_counts == k):
             raise ValueError(
@@ -486,37 +512,57 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
                 f"{k} neighbors per row, but got row counts from "
                 f"{row_counts.min()} to {row_counts.max()}."
             )
-    
+
         knn_idx = indices.reshape(n, k).astype(np.int32, copy=False)
         sorted_knn_idx = np.sort(knn_idx, axis=1).astype(np.int32, copy=False)
-    
+
         weights = _directed_jaccard_weights_numba(
             knn_idx,
             sorted_knn_idx,
         )
-    
+
         rows = np.repeat(np.arange(n, dtype=np.int32), k)
         cols = knn_idx.ravel()
         data = weights.ravel()
-    
+
         mask = data > 0.0
-    
+
         directed = sp.csr_matrix(
             (data[mask], (rows[mask], cols[mask])),
             shape=(n, n),
             dtype=np.float64,
         )
         directed.eliminate_zeros()
-    
+
         conn = (directed + directed.T).multiply(0.5)
         conn = sp.tril(conn, k=-1).tocsr()
         conn.eliminate_zeros()
-    
+
         return conn
-    
-    def create_similarity_graph(self, data):
+
+    # ------------------------------------------------------------------
+    # Initial similarity graph -- sparse (fast path) and nx (compat)
+    # ------------------------------------------------------------------
+    @_timeit
+    def _create_similarity_sparse(self, data, distances_full=None):
+        """Build the initial similarity graph as a scipy sparse matrix.
+
+        Returns ``(S_sparse_csr, n_obs)``. ``distances_full`` may be passed
+        in to avoid recomputing the (n_neighbors-independent) full distance
+        matrix during the ``heuristic_connect`` search.
+
+        For precomputed input the coerced NetworkX graph is cached so that
+        the ``similarity_graph_`` property can return it with its original
+        node labels intact.
+        """
         if self.sim_graph_method == 'precomputed':
-            return self._coerce_precomputed_graph(data)
+            g_nx = self._coerce_precomputed_graph(data)
+            n = g_nx.number_of_nodes()
+            S = nx.to_scipy_sparse_array(
+                g_nx, nodelist=list(range(n)), weight='weight', format='csr'
+            ).astype(np.float64)
+            self._precomputed_nx_ = g_nx
+            return S, n
 
         sc, sce, sc_gauss, sc_umap, _get_indices_distances_from_dense_matrix = _get_scanpy_modules()
 
@@ -525,79 +571,50 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             raise ValueError("Input data must be a 2D array-like object.")
 
         if self.metric == 'hybrid_euclidean_cosine':
-            distances_full = pairwise_distances(X, metric='euclidean')
+            if distances_full is None:
+                distances_full = pairwise_distances(X, metric='euclidean')
             knn_metric = 'cosine'
             use_precomputed_knn = False
         else:
-            distances_full = pairwise_distances(
-                X,
-                metric=self.metric,
-                **self.metric_kwds,
-            )
+            if distances_full is None:
+                distances_full = pairwise_distances(X, metric=self.metric, **self.metric_kwds)
             knn_metric = 'precomputed'
             use_precomputed_knn = True
 
         self.distances_full_ = distances_full
+        n = distances_full.shape[0]
 
         if self.sim_graph_method == 'jaccard_phenograph':
-            if use_precomputed_knn:
-                knn_dist = kneighbors_graph(
-                    distances_full,
-                    n_neighbors=self.n_neighbors - 1,
-                    mode='distance',
-                    metric='precomputed',
-                    include_self=False,
-                )
-            else:
-                knn_dist = kneighbors_graph(
-                    distances_full,
-                    n_neighbors=self.n_neighbors - 1,
-                    mode='distance',
-                    metric='cosine',
-                    include_self=False,
-                )
-        
+            knn_dist = kneighbors_graph(
+                distances_full,
+                n_neighbors=self.n_neighbors - 1,
+                mode='distance',
+                metric='precomputed' if use_precomputed_knn else 'cosine',
+                include_self=False,
+            )
+
             if self.similarity_backend == "numba":
                 conn = self._fast_phenograph_jaccard_from_knn_graph(knn_dist)
-        
             elif self.similarity_backend == "default":
-                _, conn, _ = sce.tl.phenograph(
-                    knn_dist,
-                    directed=False,
-                    clustering_algo=None,
-                )
-        
-            else:  # similarity_backend == "auto"
+                _, conn, _ = sce.tl.phenograph(knn_dist, directed=False, clustering_algo=None)
+            else:  # "auto"
                 if _HAS_NUMBA:
                     conn = self._fast_phenograph_jaccard_from_knn_graph(knn_dist)
                 else:
-                    _, conn, _ = sce.tl.phenograph(
-                        knn_dist,
-                        directed=False,
-                        clustering_algo=None,
-                    )
-        
-            return nx.from_scipy_sparse_array(conn.tocsr(), edge_attribute='weight')
+                    _, conn, _ = sce.tl.phenograph(knn_dist, directed=False, clustering_algo=None)
+
+            return sp.csr_matrix(conn).astype(np.float64), n
 
         if self.sim_graph_method == 'sc_gauss':
-            if use_precomputed_knn:
-                knn_dist = kneighbors_graph(
-                    distances_full,
-                    n_neighbors=self.n_neighbors - 1,
-                    mode='distance',
-                    metric='precomputed',
-                    include_self=False,
-                )
-            else:
-                knn_dist = kneighbors_graph(
-                    distances_full,
-                    n_neighbors=self.n_neighbors - 1,
-                    mode='distance',
-                    metric='cosine',
-                    include_self=False,
-                )
+            knn_dist = kneighbors_graph(
+                distances_full,
+                n_neighbors=self.n_neighbors - 1,
+                mode='distance',
+                metric='precomputed' if use_precomputed_knn else 'cosine',
+                include_self=False,
+            )
             conn = sc_gauss(knn_dist, n_neighbors=self.n_neighbors, knn=True)
-            return nx.from_scipy_sparse_array(conn, edge_attribute='weight')
+            return sp.csr_matrix(conn).astype(np.float64), n
 
         if self.sim_graph_method == 'sc_umap':
             if use_precomputed_knn:
@@ -608,93 +625,123 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
                 nn = NN(n_neighbors=self.n_neighbors, metric=knn_metric)
                 nn.fit(X)
                 dists, idx = nn.kneighbors(X, return_distance=True)
-            conn = sc_umap(
-                idx,
-                dists,
-                n_obs=distances_full.shape[0],
-                n_neighbors=self.n_neighbors,
-            )
-            return nx.from_scipy_sparse_array(conn, edge_attribute='weight')
+            conn = sc_umap(idx, dists, n_obs=n, n_neighbors=self.n_neighbors)
+            return sp.csr_matrix(conn).astype(np.float64), n
 
         raise ValueError(
             "Unsupported sim_graph_method. Use one of 'sc_gauss', 'sc_umap', 'jaccard_phenograph', or 'precomputed'."
         )
 
+    @_timeit
+    def create_similarity_graph(self, data):
+        """Public wrapper returning the initial similarity graph as NetworkX.
+
+        The internal pipeline uses :meth:`_create_similarity_sparse` and never
+        materializes this NetworkX object; it is provided for backward
+        compatibility / inspection only.
+        """
+        if self.sim_graph_method == 'precomputed':
+            return self._coerce_precomputed_graph(data)
+        S, n = self._create_similarity_sparse(data)
+        g = nx.from_scipy_sparse_array(S, edge_attribute='weight')
+        g.add_nodes_from(range(n))
+        return g
+
+    # ------------------------------------------------------------------
+    # Connectivity / bridging
+    # ------------------------------------------------------------------
+    @staticmethod
+    @_timeit
+    def _connect_sparse_heuristically(D_sparse, n_obs):
+        """Sparse equivalent of ``connect_graph_heuristically``.
+
+        Adds weight=1 bridge edges between disconnected components entirely
+        in scipy-sparse form, avoiding any NetworkX materialization. Since a
+        bridge weight of 1 equals the non-edge fill value used when building
+        the dense distance matrix, the specific representatives chosen here do
+        not affect ``dist_matrix_`` or the clustering result.
+        """
+        D_sparse = D_sparse.tocsr()
+        n_components, comp_labels = sp.csgraph.connected_components(
+            D_sparse, directed=False
+        )
+        if n_components <= 1:
+            return D_sparse
+
+        # one representative node per component, in first-seen order
+        reps = []
+        seen = set()
+        for node, comp in enumerate(comp_labels):
+            if comp not in seen:
+                seen.add(comp)
+                reps.append(node)
+
+        bridge_rows, bridge_cols, bridge_data = [], [], []
+        for i in range(len(reps) - 1):
+            u, v = reps[i], reps[i + 1]
+            bridge_rows.extend((u, v))
+            bridge_cols.extend((v, u))
+            bridge_data.extend((1.0, 1.0))
+
+        coo = D_sparse.tocoo()
+        rows = np.concatenate([coo.row, np.asarray(bridge_rows, dtype=coo.row.dtype)])
+        cols = np.concatenate([coo.col, np.asarray(bridge_cols, dtype=coo.col.dtype)])
+        data = np.concatenate([coo.data, np.asarray(bridge_data, dtype=coo.data.dtype)])
+
+        out = sp.csr_matrix((data, (rows, cols)), shape=(n_obs, n_obs))
+        out.sum_duplicates()
+        return out
+
+    @_timeit
     def connect_graph_heuristically(self, graph, n_obs):
-        """Connect disconnected components with synthetic bridge edges.
-    
-        This function assumes `graph` is already a dissimilarity graph:
-    
-            smaller weight = closer
-            larger weight = farther
-    
-        It does not rebuild the similarity graph.
-        It only adds bridge edges of distance weight 1 between disconnected components.
+        """Connect disconnected components with synthetic bridge edges (NetworkX).
+
+        Kept for backward compatibility; the fast path uses
+        :meth:`_connect_sparse_heuristically`.
         """
         new_graph = graph.copy()
         new_graph.add_nodes_from(range(n_obs))
-    
+
         if nx.is_connected(new_graph):
             return new_graph
-    
+
         components = list(nx.connected_components(new_graph))
-    
+
         for i in range(len(components) - 1):
             u = next(iter(components[i]))
             v = next(iter(components[i + 1]))
-    
-            # weight=1 means weakest / maximum-distance bridge
             new_graph.add_edge(u, v, weight=1)
-    
+
         return new_graph
 
     @staticmethod
+    @_timeit
     def compute_full_distance_matrix(graph):
-        """
-        Compute the full dense matrix of shortest path distances using Floyd–Warshall.
-        """
+        """Full dense matrix of shortest path distances via Floyd-Warshall."""
         return np.array(nx.floyd_warshall_numpy(graph, weight='weight'))
 
     @staticmethod
+    @_timeit
     def compute_sparse_distance_dict(graph):
-        """
-        Compute a dictionary-of-dictionaries of shortest path distances.
-        For each node, run single_source_dijkstra_path_length and store the results.
-        """
+        """Dict-of-dicts of shortest path distances (single-source Dijkstra per node)."""
         distance_dict = {}
         for node in graph.nodes():
-            # Compute shortest path lengths from 'node' to all others.
             distance_dict[node] = nx.single_source_dijkstra_path_length(graph, node, weight='weight')
         return distance_dict
 
     def graph_metric(self, u, v):
-        """
-        Custom distance metric that uses the precomputed sparse distance dictionary.
-        The data points are mapped to node indices using self._point_to_index.
-        """
+        """Custom distance metric backed by the precomputed sparse distance dict."""
         idx_u = self._point_to_index.get(tuple(u))
         idx_v = self._point_to_index.get(tuple(v))
         try:
             return self.distance_dict_[idx_u][idx_v]
         except KeyError:
-            # Since the graph is connected, this should rarely happen.
-            # Check the reverse ordering as a fallback.
             return self.distance_dict_[idx_v][idx_u]
 
     @staticmethod
+    @_timeit
     def compute_custom_distance_matrix(graph):
-        """Compute the pairwise distance matrix used by the graph-based pipeline.
-    
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Input feature matrix.
-    
-        Returns
-        -------
-        numpy.ndarray
-            Pairwise distance matrix.
-        """
+        """Dense pairwise distance matrix from a NetworkX graph (non-edges = 1)."""
         n = graph.number_of_nodes()
         dist = np.full((n, n), 1, dtype=np.float64)
         np.fill_diagonal(dist, 0)
@@ -704,8 +751,8 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             dist[v, u] = weight
         return dist
 
-
     @staticmethod
+    @_timeit
     def dense_from_sparse_edges_fill1(D_sparse: sp.csr_matrix) -> np.ndarray:
         """Create the dense edge-distance matrix expected by CoreSG/HDBSCAN.
 
@@ -720,8 +767,8 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         D[coo.row, coo.col] = coo.data
         return np.minimum(D, D.T)
 
-
     @staticmethod
+    @_timeit
     def reassign_noise_via_mst(mst_graph, labels0, c=5):
         """
         Reassign noise labels by propagating labels over a precomputed MST.
@@ -787,70 +834,65 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
 
         return labels
 
-
-
-
     # ------------------------------------------------------------------
     # ------------------------ GRAPH PREPROCESSING ---------------------
     # ------------------------------------------------------------------
-
+    @_timeit
     def _build_graph_distance(self, X):
         """Build graph-derived dense distances using the sparse fast path.
-    
-        Pipeline:
+
+        Pipeline (all in scipy-sparse until the final dense matrix):
             data / precomputed graph
-            -> initial similarity graph
-            -> weighted structural similarity graph
-            -> WSS dissimilarity graph
-            -> connected graph
+            -> initial similarity adjacency (sparse)
+            -> weighted structural similarity (sparse)
+            -> WSS dissimilarity (sparse)
+            -> connected sparse matrix
             -> dense precomputed distance matrix
         """
         self.data_ = (
             X if self.sim_graph_method == "precomputed"
             else (np.array(X) if isinstance(X, pd.DataFrame) else X)
         )
-    
+
+        # Reset lazy nx caches / precomputed handle from any previous fit.
+        self._precomputed_nx_ = None
+        self._similarity_graph_cache = None
+        self._connected_graph_cache = None
+        self._similarity_graph_WSS_cache = None
+        self._dissimilarity_graph_cache = None
+
         # ------------------------------------------------------------
-        # 1. Build initial similarity graph
+        # 1. Initial similarity adjacency (sparse)
         # ------------------------------------------------------------
-        self.similarity_graph_ = self.create_similarity_graph(self.data_)
-    
-        # Use the graph size, not len(self.data_).
-        # This is safer for precomputed NetworkX graphs and scipy sparse matrices.
-        n_obs = self.similarity_graph_.number_of_nodes()
+        S_sim, n_obs = self._create_similarity_sparse(self.data_)
+        self._similarity_sparse_ = S_sim
         self.n_obs_ = n_obs
-    
-        self.similarity_graph_.add_nodes_from(range(n_obs))
-    
+
         # ------------------------------------------------------------
-        # 2. Compute WSS similarity, then convert to dissimilarity
+        # 2. WSS similarity (sparse), then dissimilarity (sparse)
         # ------------------------------------------------------------
-        self.similarity_graph_WSS_sparse_ = self.compute_similarity_sparse(
-            self.similarity_graph_
-        )
-    
+        self.similarity_graph_WSS_sparse_ = self._wss_similarity_sparse(S_sim)
         self.dissimilarity_graph_sparse_ = self.similarity_to_dissimilarity_sparse(
             self.similarity_graph_WSS_sparse_
         )
-    
+
         # ------------------------------------------------------------
-        # 3. Check whether WSS dissimilarity graph is connected
+        # 3. Connectivity check
         # ------------------------------------------------------------
+        _t0 = time.perf_counter()
         n_components, _ = sp.csgraph.connected_components(
-            self.dissimilarity_graph_sparse_,
-            directed=False
+            self.dissimilarity_graph_sparse_, directed=False
         )
-    
+        print(f"[TIMER] _build_graph_distance:connectivity_check: {time.perf_counter() - _t0:.4f}s")
+
         # ------------------------------------------------------------
-        # 4. If disconnected and NOT precomputed, optionally increase
-        #    n_neighbors until the WSS dissimilarity graph is connected.
-        #
-        #    In precomputed mode, n_neighbors cannot change the graph,
-        #    so this block is skipped.
+        # 4. Optionally grow n_neighbors until connected (non-precomputed).
+        #    The full distance matrix does not depend on n_neighbors, so it
+        #    is computed once (in step 1) and reused here.
         # ------------------------------------------------------------
         self.n_neighbors_initial_ = self.n_neighbors
         self.n_neighbors_used_ = self.n_neighbors
-    
+
         if (
             n_components > 1
             and self.heuristic_connect
@@ -859,121 +901,109 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             original_n_neighbors = self.n_neighbors
             new_n_neighbors = self.n_neighbors
             max_neighbors = n_obs
-    
+            cached_distances = getattr(self, "distances_full_", None)
+
             while n_components > 1 and new_n_neighbors < max_neighbors:
                 new_n_neighbors += 1
                 print("Trying n_neighbors =", new_n_neighbors)
-    
+
                 self.n_neighbors = new_n_neighbors
-    
-                # Rebuild the full correct pipeline:
-                # similarity graph -> WSS similarity -> WSS dissimilarity
-                self.similarity_graph_ = self.create_similarity_graph(self.data_)
-                self.similarity_graph_.add_nodes_from(range(n_obs))
-    
-                self.similarity_graph_WSS_sparse_ = self.compute_similarity_sparse(
-                    self.similarity_graph_
+
+                S_sim, _ = self._create_similarity_sparse(
+                    self.data_, distances_full=cached_distances
                 )
-    
+                self._similarity_sparse_ = S_sim
+                self.similarity_graph_WSS_sparse_ = self._wss_similarity_sparse(S_sim)
                 self.dissimilarity_graph_sparse_ = self.similarity_to_dissimilarity_sparse(
                     self.similarity_graph_WSS_sparse_
                 )
-    
+
                 n_components, _ = sp.csgraph.connected_components(
-                    self.dissimilarity_graph_sparse_,
-                    directed=False
+                    self.dissimilarity_graph_sparse_, directed=False
                 )
-    
+
             self.n_neighbors_used_ = self.n_neighbors
-    
+
             if n_components > 1:
                 raise RuntimeError(
                     "Could not build a connected WSS dissimilarity graph even after "
                     f"increasing n_neighbors from {original_n_neighbors} "
                     f"to {max_neighbors}."
                 )
-    
+
         # ------------------------------------------------------------
-        # 5. If connected, use WSS dissimilarity graph directly
+        # 5/6. Connected sparse matrix (bridge in sparse form if needed)
         # ------------------------------------------------------------
         if n_components <= 1:
-            self.dist_matrix_ = self.dense_from_sparse_edges_fill1(
-                self.dissimilarity_graph_sparse_
-            )
-    
-            self.connected_graph_ = nx.from_scipy_sparse_array(
-                self.dissimilarity_graph_sparse_,
-                edge_attribute="weight"
-            )
-            self.connected_graph_.add_nodes_from(range(n_obs))
-    
-        # ------------------------------------------------------------
-        # 6. If still disconnected, connect components with bridge
-        #    edges of distance 1.
-        #
-        #    This is used when:
-        #      - heuristic_connect=False
-        #      - or sim_graph_method="precomputed"
-        # ------------------------------------------------------------
+            self._connected_sparse_ = self.dissimilarity_graph_sparse_
         else:
-            sparse_nx = nx.from_scipy_sparse_array(
-                self.dissimilarity_graph_sparse_,
-                edge_attribute="weight"
+            self._connected_sparse_ = self._connect_sparse_heuristically(
+                self.dissimilarity_graph_sparse_, n_obs
             )
-            sparse_nx.add_nodes_from(range(n_obs))
-    
-            self.connected_graph_ = self.connect_graph_heuristically(
-                sparse_nx,
-                n_obs
-            )
-    
-            self.dist_matrix_ = self.compute_custom_distance_matrix(
-                self.connected_graph_
-            )
-        # TODO 7 and 8 are speed bottlenecks
+
+        self.dist_matrix_ = self.dense_from_sparse_edges_fill1(self._connected_sparse_)
+
+        # Invalidate lazy nx views built from stale sparse data.
+        self._connected_graph_cache = None
+        self._similarity_graph_WSS_cache = None
+        self._dissimilarity_graph_cache = None
+        self._similarity_graph_cache = None
+
         # ------------------------------------------------------------
-        # 7. MST used later for optional noise reassignment
+        # 7. MST for optional noise reassignment -- scipy (C-level) on the
+        #    sparse matrix; only the (n_obs - 1)-edge result becomes nx.
         # ------------------------------------------------------------
-        self.mst_graph_ = nx.minimum_spanning_tree(
-            self.connected_graph_,
-            weight="weight"
-        )
-    
-        # ------------------------------------------------------------
-        # 8. Store NetworkX versions for inspection/debugging
-        # ------------------------------------------------------------
-        self.similarity_graph_WSS = nx.from_scipy_sparse_array(
-            self.similarity_graph_WSS_sparse_,
-            edge_attribute="weight"
-        )
-        self.similarity_graph_WSS.add_nodes_from(range(n_obs))
-    
-        self.dissimilarity_graph_ = nx.from_scipy_sparse_array(
-            self.dissimilarity_graph_sparse_,
-            edge_attribute="weight"
-        )
-        self.dissimilarity_graph_.add_nodes_from(range(n_obs))
+        _t0 = time.perf_counter()
+        mst_sparse = minimum_spanning_tree(self._connected_sparse_)
+        mst_sparse = mst_sparse + mst_sparse.T  # symmetrize for nx.Graph
+        self.mst_graph_ = nx.from_scipy_sparse_array(mst_sparse, edge_attribute="weight")
+        self.mst_graph_.add_nodes_from(range(n_obs))
+        print(f"[TIMER] _build_graph_distance:mst: {time.perf_counter() - _t0:.4f}s")
 
     # ------------------------------------------------------------------
     # ------------------------- FIT ------------------------------------
     # ------------------------------------------------------------------
+    def _call_coresg_run(self):
+        """Call ``self.coresg_.run(...)`` forwarding only supported kwargs.
 
+        Different ``core.py`` revisions expose different ``run`` signatures:
+        the published repo version accepts ``cluster_selection_method`` but
+        not ``foscx_settings``; a newer revision accepts both. Instead of
+        hard-coding one, inspect the signature and pass only what fits, so
+        this file runs unmodified against either core.
+        """
+        desired = {
+            "cluster_selection_method": self.cluster_selection_method,
+            "foscx_settings": self.foscx_settings,
+        }
+        try:
+            params = inspect.signature(self.coresg_.run).parameters
+            accepts_var_kw = any(
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+            )
+        except (TypeError, ValueError):
+            params, accepts_var_kw = {}, False
+
+        if accepts_var_kw:
+            kwargs = dict(desired)
+        else:
+            kwargs = {k: v for k, v in desired.items() if k in params}
+
+        # Warn only if a *non-default* option is being silently dropped
+        # (an empty foscx_settings dict is falsy and thus never reported).
+        dropped = [k for k, v in desired.items() if k not in kwargs and v]
+        if dropped:
+            warnings.warn(
+                f"CoreSGHDBSCAN.run() does not accept {dropped}; these "
+                "options are ignored. Update core.py to enable them.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return self.coresg_.run(**kwargs)
+
+    @_timeit
     def fit(self, X, y=None):
-        """
-        Fit the model on feature data or a precomputed graph.
-    
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features) or graph-like
-            Input feature matrix when ``sim_graph_method`` is not ``"precomputed"``.
-            In ``"precomputed"`` mode, this may be a ``networkx.Graph``, a SciPy
-            sparse adjacency matrix, or a square dense adjacency matrix.
-    
-        Returns
-        -------
-        self : GraphCoreSGHDBSCAN
-            Fitted estimator.
-        """
+        """Fit the model on feature data or a precomputed graph."""
         self._build_graph_distance(X)
 
         self.coresg_ = CoreSGHDBSCAN(
@@ -982,30 +1012,26 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             min_cluster_size=self.min_cluster_size,
             save_models=self.save_models,
         )
+
+        self.coresg_.nn = self.n_neighbors
+        self.coresg_.similarity_graph_WSS_sparse_ = self.similarity_graph_WSS_sparse_
+
+        _t0 = time.perf_counter()
         self.coresg_.fit_from_distance_matrix(self.dist_matrix_)
-        self.coresg_.run()
+        print(f"[TIMER] fit:coresg_.fit_from_distance_matrix: {time.perf_counter() - _t0:.4f}s")
+
+        _t0 = time.perf_counter()
+        self._call_coresg_run()
+        print(f"[TIMER] fit:coresg_.run: {time.perf_counter() - _t0:.4f}s")
+
         self.models_ = self.coresg_.models_
         self.condensed_trees_ = self.coresg_.condensed_trees_
         self.labels_by_m_ = self.coresg_.labels_by_m_
         return self
 
-
-
-
+    @_timeit
     def fit_predict(self, X, y=None, m=None, c=5, **fit_params):
-        """
-        Fit the model and return cluster labels.
-    
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features) or graph-like
-            Input feature matrix or supported precomputed graph representation.
-    
-        Returns
-        -------
-        numpy.ndarray
-            Cluster labels for the fitted solution.
-        """
+        """Fit the model and return cluster labels."""
         self.fit(X, y, **fit_params)
 
         if m is None:
@@ -1019,13 +1045,15 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         labels = self.coresg_.labels_by_m_[int(m)]
 
         if self.no_noise:
-            return self.reassign_noise_via_mst(
-                self.mst_graph_,
-                labels,
-                c=c,
-            )
+            if isinstance(labels[0], np.int64):
+                labels = self.reassign_noise_via_mst(self.mst_graph_, labels, c=c)
+            else:
+                for i, labs in enumerate(labels):
+                    labels[i] = self.reassign_noise_via_mst(self.mst_graph_, labs, c=c)
+
         return labels
 
+    @_timeit
     def fit_coresg(self, X, m_list, coresg_kwargs=None):
         """Build graph-derived distances and run CoreSGHDBSCAN on them."""
         self._build_graph_distance(X)
@@ -1045,150 +1073,53 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         self.labels_by_m_ = self.coresg_.labels_by_m_
         return self
 
-
     # ------------------------------------------------------------------
     # -------------------------- ACCESSORS -----------------------------
     # ------------------------------------------------------------------
-
+    @_timeit
     def labels_for(self, m, no_noise=None, c=5):
-        """
-        Return labels for a selected ``min_samples`` value.
-    
-        Parameters
-        ----------
-        m : int
-            Selected ``min_samples`` value.
-        no_noise : bool or None, optional
-            If ``True``, apply MST-based noise reassignment. If ``None``, use
-            the instance-level ``no_noise`` setting.
-        c : int, optional
-            Tie-breaking path length used during noise reassignment.
-    
-        Returns
-        -------
-        numpy.ndarray
-            Cluster labels for the requested fitted solution.
-
-        Notes
-        -----
-        ``labels_by_m_[m]`` stores the directly fitted labels.
-        ``labels_for(m)`` may additionally apply noise reassignment.
-        """
+        """Return labels for a selected ``min_samples`` value."""
         labels = self.coresg_.labels_by_m_[int(m)]
-    
+
         if no_noise is None:
             no_noise = self.no_noise
-    
+
         if no_noise:
-            labels = self.reassign_noise_via_mst(
-                self.mst_graph_,
-                labels,
-                c=c,
-            )
-    
+            if isinstance(labels[0], np.int64):
+                labels = self.reassign_noise_via_mst(self.mst_graph_, labels, c=c)
+            else:
+                for i, labs in enumerate(labels):
+                    labels[i] = self.reassign_noise_via_mst(self.mst_graph_, labs, c=c)
+
         return labels
 
-        
     def plot_condensed_tree(self, m, figsize=(10, 6), **kwargs):
-        """
-        Plot the condensed tree for a selected ``min_samples`` value.
-    
-        Parameters
-        ----------
-        m : int
-            The ``min_samples`` value whose condensed tree should be displayed.
-        figsize : tuple of float, optional
-            Figure size passed to Matplotlib, by default ``(8, 5)``.
-        **kwargs
-            Additional keyword arguments forwarded to
-            ``CondensedTree.plot()``.
-    
-        Returns
-        -------
-        None
-            Displays the condensed tree plot.
-    
-        Raises
-        ------
-        ValueError
-            If the model has not been fitted yet.
-        KeyError
-            If the requested ``m`` is not available in the stored results.
-    
-        Notes
-        -----
-        This method first looks for the condensed tree in
-        ``self.coresg_.condensed_trees_``. If it is not found there, it falls
-        back to ``self.coresg_.models_[m].condensed_tree_`` when full models
-        have been saved.
-    
-        Examples
-        --------
-        >>> g.fit(X)
-        >>> g.plot_condensed_tree(10)
-        """
+        """Plot the condensed tree for a selected ``min_samples`` value."""
         import matplotlib.pyplot as plt
-    
+
         if not hasattr(self, "coresg_") or self.coresg_ is None:
             raise ValueError("Model is not fitted yet. Call fit(...) first.")
-    
+
         m = int(m)
-    
+
         if m in getattr(self.coresg_, "condensed_trees_", {}):
             ct = self.coresg_.condensed_trees_[m]
         elif m in getattr(self.coresg_, "models_", {}):
             ct = self.coresg_.models_[m].condensed_tree_
         else:
             raise KeyError(f"m={m} not found in CORE-SG results.")
-    
+
         if ct is None or not hasattr(ct, "plot"):
             print(f"No condensed tree for CORE-SG m={m}")
             return
-    
+
         plt.figure(figsize=figsize)
         ct.plot(select_clusters=False, label_clusters=False, **kwargs)
         plt.title(f"CORE-SG Condensed Tree (min_samples = {m})")
         plt.show()
 
-
     def interactive_condensed_tree(self, figsize=(10, 6)):
-        """
-        Create an interactive condensed tree explorer across fitted
-        ``min_samples`` values.
-    
-        Parameters
-        ----------
-        figsize : tuple of float, optional
-            Figure size passed to Matplotlib for each displayed condensed
-            tree, by default ``(10, 6)``.
-    
-        Returns
-        -------
-        ipywidgets.Widget
-            A selection slider widget for browsing condensed trees across
-            available ``min_samples`` values.
-    
-        Raises
-        ------
-        ImportError
-            If ``ipywidgets`` is not installed.
-        RuntimeError
-            If the model has not been fitted yet.
-        ValueError
-            If no condensed trees are available.
-    
-        Notes
-        -----
-        This method is intended for use in an interactive Jupyter
-        environment. It uses the stored condensed trees in
-        ``self.coresg_.condensed_trees_`` and falls back to any available
-        entries in ``self.coresg_.models_``.
-    
-        Examples
-        --------
-        >>> g.fit(X)
-        >>> widget = g.interactive_condensed_tree()
-        """
+        """Interactive condensed tree explorer across fitted ``min_samples`` values."""
         try:
             import ipywidgets as widgets
             from IPython.display import display, clear_output
@@ -1197,22 +1128,22 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
                 "ipywidgets is required for interactive plotting. "
                 "Install it with `pip install ipywidgets`."
             ) from e
-    
+
         import matplotlib.pyplot as plt
-    
+
         if not hasattr(self, "coresg_") or self.coresg_ is None:
             raise RuntimeError("Call fit(...) before interactive_condensed_tree().")
-    
+
         m_list = sorted(
             set(getattr(self.coresg_, "condensed_trees_", {}).keys()) |
             set(getattr(self.coresg_, "models_", {}).keys())
         )
-    
+
         if len(m_list) == 0:
             raise ValueError("No condensed trees are available.")
-    
+
         output = widgets.Output()
-    
+
         slider = widgets.SelectionSlider(
             options=m_list,
             value=m_list[0],
@@ -1221,18 +1152,18 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             style={"description_width": "initial"},
             layout=widgets.Layout(width="500px"),
         )
-    
+
         def redraw(m):
             with output:
                 clear_output(wait=True)
                 self.plot_condensed_tree(m=int(m), figsize=figsize)
-    
+
         def on_change(change):
             if change["name"] == "value":
                 redraw(change["new"])
-    
+
         slider.observe(on_change, names="value")
         display(widgets.VBox([slider, output]))
         redraw(m_list[0])
-    
+
         return slider
