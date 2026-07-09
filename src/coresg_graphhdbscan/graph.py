@@ -1,4 +1,35 @@
-"""Graph-based wrapper around CoreSG-HDBSCAN."""
+"""Graph-based wrapper around CoreSG-HDBSCAN (optimized).
+
+Speed/memory notes vs. the previous revision
+---------------------------------------------
+* The initial similarity graph is kept in scipy-sparse form end to end.
+  The old pipeline built it as a scipy matrix, wrapped it in a NetworkX
+  graph, then looped over ``graph.edges(data=True)`` in Python to rebuild
+  a scipy matrix again -- an O(E) scipy->networkx->scipy round trip that
+  allocates a dict-of-dicts for every edge. That round trip is gone;
+  ``_wss_similarity_sparse`` works directly on the sparse adjacency.
+* ``similarity_graph_`` / ``similarity_graph_WSS`` / ``dissimilarity_graph_``
+  / ``connected_graph_`` are lazily-built NetworkX views (properties). They
+  are debug/inspection only and never touched by ``fit``.
+* The MST used for optional noise reassignment is computed with scipy
+  (C-level) on the sparse matrix; only the tiny (n-1 edge) result becomes
+  a NetworkX graph.
+* Component bridging is done entirely in scipy-sparse form.
+* In the ``heuristic_connect`` search the full distance matrix is computed
+  once and reused across iterations (it does not depend on n_neighbors).
+
+Result equivalence
+------------------
+For the default ``add_neighbor=True`` path the weighted structural
+similarity is bit-identical to the previous implementation (same ``A@A.T``
+on the same adjacency ``A``). The only non-deterministic choices left are
+(a) which minimum spanning tree is returned among equal-weight MSTs and
+(b) which representative nodes are bridged when the graph is disconnected;
+neither changes the clustering result (bridge weight 1 equals the
+non-edge fill value, so ``dist_matrix_`` is unaffected), and any MST-tie
+difference only affects individual noise-point reassignment, which is
+inherently ambiguous at ties.
+"""
 
 from .core import CoreSGHDBSCAN
 
@@ -129,6 +160,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
                 similarity_backend="auto",
                 cluster_selection_method="eom",
                 foscx_settings={},
+                use_sparse_fit=True,
                 **kwargs,
             ):
 
@@ -210,6 +242,10 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         self.condensed_trees_ = {}
         self.labels_by_m_ = {}
 
+        # Prefer the sparse CORE-SG hand-off (no dense N x N) when the bound
+        # core.py exposes it; falls back to the dense fill-1 path otherwise.
+        self.use_sparse_fit = bool(use_sparse_fit)
+
         # Lazy NetworkX-view caches (built on demand by the properties below).
         self._similarity_sparse_ = None
         self._precomputed_nx_ = None
@@ -217,6 +253,10 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         self._connected_graph_cache = None
         self._similarity_graph_WSS_cache = None
         self._dissimilarity_graph_cache = None
+        # Lazy dense-matrix / MST caches (only materialised when actually used).
+        self._dist_matrix_cache = None
+        self._mst_graph_cache = None
+        self._connected_sparse_ = None
 
         # Backward-compatible handling of removed parameters.
         kwargs.pop('force_connected', None)
@@ -334,6 +374,45 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             g.add_nodes_from(range(self.n_obs_))
             self._dissimilarity_graph_cache = g
         return self._dissimilarity_graph_cache
+
+    @property
+    def dist_matrix_(self):
+        """Dense fill-1 edge-distance matrix (lazy).
+
+        Materialised on first access from the connected sparse graph. The
+        sparse fit path (``use_sparse_fit=True``) never touches this, so the
+        O(N^2) dense matrix is only built when explicitly requested or when the
+        dense fallback path is used.
+        """
+        if getattr(self, "_connected_sparse_", None) is None:
+            raise AttributeError(
+                "dist_matrix_ is not available until the model has been fit."
+            )
+        if getattr(self, "_dist_matrix_cache", None) is None:
+            self._dist_matrix_cache = self.dense_from_sparse_edges_fill1(self._connected_sparse_)
+        return self._dist_matrix_cache
+
+    @property
+    def mst_graph_(self):
+        """MST of the connected WSS graph as a NetworkX graph (lazy).
+
+        Only needed for optional noise reassignment (``no_noise=True``); built
+        on first access so the common path never pays for the NetworkX round
+        trip.
+        """
+        if getattr(self, "_connected_sparse_", None) is None:
+            raise AttributeError(
+                "mst_graph_ is not available until the model has been fit."
+            )
+        if getattr(self, "_mst_graph_cache", None) is None:
+            _t0 = time.perf_counter()
+            mst_sparse = minimum_spanning_tree(self._connected_sparse_)
+            mst_sparse = mst_sparse + mst_sparse.T  # symmetrize for nx.Graph
+            g = nx.from_scipy_sparse_array(mst_sparse, edge_attribute="weight")
+            g.add_nodes_from(range(self.n_obs_))
+            self._mst_graph_cache = g
+            print(f"[TIMER] mst_graph_ (lazy build): {time.perf_counter() - _t0:.4f}s")
+        return self._mst_graph_cache
 
     def _min_cluster_size_for(self, m):
         m = int(m)
@@ -932,7 +1011,10 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
                 )
 
         # ------------------------------------------------------------
-        # 5/6. Connected sparse matrix (bridge in sparse form if needed)
+        # 5/6. Connected sparse matrix (bridge in sparse form if needed).
+        #      This is the single source of truth handed to CORE-SG; the dense
+        #      fill-1 matrix (dist_matrix_) and the noise-reassignment MST
+        #      (mst_graph_) are now BUILT LAZILY from it, only when accessed.
         # ------------------------------------------------------------
         if n_components <= 1:
             self._connected_sparse_ = self.dissimilarity_graph_sparse_
@@ -941,24 +1023,13 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
                 self.dissimilarity_graph_sparse_, n_obs
             )
 
-        self.dist_matrix_ = self.dense_from_sparse_edges_fill1(self._connected_sparse_)
-
-        # Invalidate lazy nx views built from stale sparse data.
+        # Invalidate lazy views/caches built from stale sparse data.
         self._connected_graph_cache = None
         self._similarity_graph_WSS_cache = None
         self._dissimilarity_graph_cache = None
         self._similarity_graph_cache = None
-
-        # ------------------------------------------------------------
-        # 7. MST for optional noise reassignment -- scipy (C-level) on the
-        #    sparse matrix; only the (n_obs - 1)-edge result becomes nx.
-        # ------------------------------------------------------------
-        _t0 = time.perf_counter()
-        mst_sparse = minimum_spanning_tree(self._connected_sparse_)
-        mst_sparse = mst_sparse + mst_sparse.T  # symmetrize for nx.Graph
-        self.mst_graph_ = nx.from_scipy_sparse_array(mst_sparse, edge_attribute="weight")
-        self.mst_graph_.add_nodes_from(range(n_obs))
-        print(f"[TIMER] _build_graph_distance:mst: {time.perf_counter() - _t0:.4f}s")
+        self._dist_matrix_cache = None
+        self._mst_graph_cache = None
 
     # ------------------------------------------------------------------
     # ------------------------- FIT ------------------------------------
@@ -1001,6 +1072,28 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             )
         return self.coresg_.run(**kwargs)
 
+    def _coresg_fit_graph(self):
+        """Hand the connected graph to CORE-SG, preferring the sparse path.
+
+        When ``use_sparse_fit`` is on and the bound ``core.py`` exposes
+        ``fit_from_sparse_graph``, feed the sparse graph directly (no dense
+        N x N ever materialised). Otherwise fall back to the dense fill-1
+        matrix (built lazily on first ``dist_matrix_`` access) so this file
+        keeps working against an older core.
+        """
+        use_sparse = (
+            getattr(self, "use_sparse_fit", True)
+            and hasattr(self.coresg_, "fit_from_sparse_graph")
+        )
+        _t0 = time.perf_counter()
+        if use_sparse:
+            self.coresg_.fit_from_sparse_graph(self._connected_sparse_)
+            label = "fit:coresg_.fit_from_sparse_graph"
+        else:
+            self.coresg_.fit_from_distance_matrix(self.dist_matrix_)
+            label = "fit:coresg_.fit_from_distance_matrix"
+        print(f"[TIMER] {label}: {time.perf_counter() - _t0:.4f}s")
+
     @_timeit
     def fit(self, X, y=None):
         """Fit the model on feature data or a precomputed graph."""
@@ -1016,9 +1109,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         self.coresg_.nn = self.n_neighbors
         self.coresg_.similarity_graph_WSS_sparse_ = self.similarity_graph_WSS_sparse_
 
-        _t0 = time.perf_counter()
-        self.coresg_.fit_from_distance_matrix(self.dist_matrix_)
-        print(f"[TIMER] fit:coresg_.fit_from_distance_matrix: {time.perf_counter() - _t0:.4f}s")
+        self._coresg_fit_graph()
 
         _t0 = time.perf_counter()
         self._call_coresg_run()
@@ -1066,7 +1157,8 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             min_cluster_size=self.min_cluster_size,
             save_models=self.save_models,
             **coresg_kwargs
-        ).fit_from_distance_matrix(self.dist_matrix_)
+        )
+        self._coresg_fit_graph()
         self.coresg_.run()
         self.models_ = self.coresg_.models_
         self.condensed_trees_ = self.coresg_.condensed_trees_

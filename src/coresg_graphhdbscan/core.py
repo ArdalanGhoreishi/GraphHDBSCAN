@@ -134,12 +134,121 @@ def prim_mrd_mst_edges_from_D(D: np.ndarray, core: np.ndarray) -> np.ndarray:
 
 
 # ===========================================
+# Memory-safe kmax-NNG (chunked upper-triangle scan)
+# ===========================================
+def _kmax_nng_edges_chunked(D: np.ndarray, core_kmax: np.ndarray,
+                            eps: float, block: int = 4096) -> np.ndarray:
+    """Row-block equivalent of::
+
+        iu, ju = np.triu_indices(N, k=1)
+        cond = (D[iu,ju] <= core_kmax[iu]+eps) | (D[iu,ju] <= core_kmax[ju]+eps)
+        edges = stack(iu[cond], ju[cond])
+
+    Produces the *identical* set of upper-triangular edges (i < j) but never
+    materialises the O(N^2) index arrays from ``np.triu_indices``; peak temp is
+    O(block * N). Output order is irrelevant downstream (``np.unique`` sorts).
+    """
+    N = D.shape[0]
+    thr = core_kmax + eps
+    out_i, out_j = [], []
+    for start in range(0, N, block):
+        stop = min(start + block, N)
+        Dblk = D[start:stop]                                   # (b, N)
+        cond = (Dblk <= thr[start:stop, None]) | (Dblk <= thr[None, :])
+        a, j = np.nonzero(cond)
+        i = a + start
+        keep = j > i                                           # upper triangle only
+        if np.any(keep):
+            out_i.append(i[keep])
+            out_j.append(j[keep])
+    if out_i:
+        ii = np.concatenate(out_i).astype(np.int32)
+        jj = np.concatenate(out_j).astype(np.int32)
+        return np.stack((ii, jj), axis=1)
+    return np.empty((0, 2), dtype=np.int32)
+
+
+# ===========================================
+# Sparse-path helpers (no dense N x N ever materialised)
+# ===========================================
+def _symmetric_real_edges(S, fill_value: float):
+    """Return upper-triangular real edges (i<j) with value = min over the two
+    directions, treating a missing direction as ``fill_value``.
+
+    This reproduces exactly the off-diagonal ``< fill_value`` entries of
+    ``np.minimum(D, D.T)`` where ``D`` is the dense fill-``fill_value`` matrix.
+    """
+    S = S.tocoo()
+    r = np.concatenate([S.row, S.col])
+    c = np.concatenate([S.col, S.row])
+    d = np.concatenate([S.data, S.data]).astype(np.float64)
+    m = r < c
+    r, c, d = r[m], c[m], d[m]
+    if r.size == 0:
+        z = np.empty(0, dtype=np.int32)
+        return z, z, np.empty(0, dtype=np.float64)
+    N = S.shape[0]
+    key = r.astype(np.int64) * N + c
+    order = np.argsort(key, kind="stable")
+    key, r, c, d = key[order], r[order], c[order], d[order]
+    start = np.empty(key.shape[0], dtype=bool)
+    start[0] = True
+    np.not_equal(key[1:], key[:-1], out=start[1:])
+    seg = np.flatnonzero(start)
+    dmin = np.minimum.reduceat(d, seg)
+    # missing direction == fill_value: an edge present in only one direction
+    # keeps its own value (<= fill_value), so min with implicit fill is a no-op.
+    ru = r[seg].astype(np.int32)
+    cu = c[seg].astype(np.int32)
+    return ru, cu, dmin
+
+
+def _knn_core_from_edges(er, ec, ed, N, kmax, fill_value):
+    """Self-inclusive kNN tables + core distances from symmetric real edges.
+
+    core_m[i] = m-th smallest of (sorted real neighbour dissimilarities of i,
+    padded with ``fill_value``); with self (distance 0) at column 0. Identical
+    in value to the dense path's ``dst_with_self_[:, m]``.
+    """
+    # symmetric directed edges
+    SR = np.concatenate([er, ec])
+    SC = np.concatenate([ec, er])
+    SD = np.concatenate([ed, ed]).astype(np.float64)
+    if SR.size:
+        order = np.lexsort((SD, SR))               # by source, then distance asc
+        SR, SC, SD = SR[order], SC[order], SD[order]
+        deg = np.bincount(SR, minlength=N)
+        starts = np.zeros(N + 1, dtype=np.int64)
+        np.cumsum(deg, out=starts[1:])
+        rank = np.arange(SR.shape[0]) - np.repeat(starts[:-1], deg)
+        keep = rank < kmax
+    else:
+        keep = np.zeros(0, dtype=bool)
+        deg = np.zeros(N, dtype=np.int64)
+    dst_ns = np.full((N, kmax), fill_value, dtype=np.float64)
+    idx_ns = np.full((N, kmax), -1, dtype=np.int32)
+    if SR.size:
+        rr = SR[keep]; cc = SC[keep]; dd = SD[keep]; pp = rank[keep]
+        dst_ns[rr, pp] = dd
+        idx_ns[rr, pp] = cc
+    # placeholder neighbour index for padded slots (self-loop id is harmless;
+    # only used as a fallback table, never as a distance value)
+    pad = idx_ns < 0
+    if np.any(pad):
+        rows = np.nonzero(pad)[0]
+        idx_ns[pad] = rows
+    ar = np.arange(N, dtype=np.int32)
+    idx_with_self = np.concatenate([ar[:, None], idx_ns], axis=1)
+    dst_with_self = np.concatenate([np.zeros((N, 1), dtype=np.float64), dst_ns], axis=1)
+    return idx_with_self, dst_with_self
+
+
+# ===========================================
 # CORE-SG model wrapper (HDBSCAN-like)
 # ===========================================
 class CoreSGModel:
     """
-    Lightweight wrapper that mimics the HDBSCAN attributes used by this package. 
-    Stored result object for one fitted ``min_samples`` value.
+    Lightweight wrapper that mimics the HDBSCAN attributes used by this package.
 
     Attributes
     ----------
@@ -149,13 +258,10 @@ class CoreSGModel:
         Membership strengths for each sample.
     cluster_persistence_ : numpy.ndarray
         Persistence score for each cluster.
+    condensed_tree_ : object
+        Condensed tree wrapper with plotting support.
     single_linkage_tree_ : object
         Single-linkage tree wrapper.
-    cluster_persistence_ : numpy.ndarray
-        Cluster persistence values returned by the HDBSCAN*-style cluster
-        selection step.
-    condensed_tree_ : hdbscan.plots.CondensedTree
-        Condensed tree object for plotting and inspection.
     """
 
     def __init__(self,
@@ -177,10 +283,8 @@ class CoreSGModel:
 @dataclass
 class CoreSGHDBSCAN:
     """
-    CoreSG-based hierarchical density clustering backend.
-
-    This class implements the lower-level CoreSG-HDBSCAN pipeline operating on
-    feature vectors or distance representations.
+    CORE-SG multi-HDBSCAN implementation using the generic HDBSCAN pipeline
+    together with the package's faster MST logic.
 
     Workflow
     --------
@@ -214,15 +318,17 @@ class CoreSGHDBSCAN:
     metric: str = "euclidean"
     eps: float = 1e-12
     min_cluster_size: Optional[int] = None
-    save_models: bool = False
+    save_models: bool = False   # API compat with the graph wrapper (models are kept regardless)
 
     # Filled by fit()
     X_: Optional[np.ndarray] = field(init=False, default=None)
     N_: Optional[int] = field(init=False, default=None)
-    D_: Optional[np.ndarray] = field(init=False, default=None)        # (N,N) float64
+    D_: Optional[np.ndarray] = field(init=False, default=None)        # (N,N) float64 (dense path only)
     core_: Dict[int, np.ndarray] = field(init=False, default_factory=dict)  # m -> (N,) float64
     kmax_: Optional[int] = field(init=False, default=None)
     edges_ut_: Optional[np.ndarray] = field(init=False, default=None)       # CORE-SG edges (E,2), i<j
+    edge_base_: Optional[np.ndarray] = field(init=False, default=None)      # (E,) base dist per edge (sparse path)
+    fill_value_: float = field(init=False, default=1.0)                     # non-edge dissimilarity (sparse path)
 
     # kNN tables
     idx_with_self_: Optional[np.ndarray] = field(init=False, default=None)  # (N, kmax+1)
@@ -236,10 +342,12 @@ class CoreSGHDBSCAN:
     mst_times_: Dict[int, float] = field(init=False, default_factory=dict)
 
     # Final HDBSCAN-like models per m
-    models_: Dict[int, CoreSGModel] = field(init=False, default_factory=dict, repr=False)
-    condensed_trees_: Dict[int, object] = field(init=False, default_factory=dict, repr=False)
-    labels_by_m_: Dict[int, np.ndarray] = field(init=False, default_factory=dict, repr=False)
-    times_: Dict[int, float] = field(init=False, default_factory=dict, repr=False)
+    models_: Dict[int, CoreSGModel] = field(init=False, default_factory=dict)
+    times_: Dict[int, float] = field(init=False, default_factory=dict)      # total per-m time
+
+    # Convenience views (API compat with the graph wrapper)
+    labels_by_m_: Dict[int, np.ndarray] = field(init=False, default_factory=dict)
+    condensed_trees_: Dict[int, object] = field(init=False, default_factory=dict)
 
     # --------------------------------------------------------
     # FIT: build D, self-inclusive cores, CORE-SG graph, CSR neighbor table
@@ -303,11 +411,10 @@ class CoreSGHDBSCAN:
         t1 = time.time()
         print(f"[CORE-SG] Self-inclusive core distances for {len(mlist)} m values in {t1 - t0:.3f}s")
 
-        # C) kmax-NNG WITH ALL TIES (OR condition with cores)
+        # C) kmax-NNG WITH ALL TIES (OR condition with cores) — chunked upper
+        #    triangle scan, O(block*N) peak instead of O(N^2) triu index arrays.
         t0 = time.time()
-        iu, ju = np.triu_indices(N, k=1)
-        cond = (D[iu, ju] <= core_kmax[iu] + self.eps) | (D[iu, ju] <= core_kmax[ju] + self.eps)
-        kmax_edges = np.stack((iu[cond].astype(np.int32), ju[cond].astype(np.int32)), axis=1)
+        kmax_edges = _kmax_nng_edges_chunked(D, core_kmax, self.eps)
         t1 = time.time()
         print(f"[CORE-SG] kmax-NNG-with-ties has {kmax_edges.shape[0]} edges (built in {t1 - t0:.3f}s)")
 
@@ -362,15 +469,21 @@ class CoreSGHDBSCAN:
         self.D_ = D
 
         # --- kNN from D (self-inclusive) ---
-        # sort each row by distance (stable, so ties broken by index)
-        idx_all = np.argsort(D, axis=1, kind="mergesort")
-        d_all = np.take_along_axis(D, idx_all, axis=1)
-
-        # keep self + kmax neighbors
-        if idx_all.shape[1] < kmax + 1:
+        # argpartition to the kmax+1 smallest per row, then stable-sort *only*
+        # those. This is value-identical to a full-row mergesort + slice: the
+        # m-th smallest DISTANCE per row is unchanged, so core distances, the
+        # kmax-NNG edge set and the MST (all value-based) are bit-identical.
+        # Only the tie-index ordering within a row may differ, and that feeds
+        # A_knn_ whose values are recovered from D regardless — labels are
+        # therefore bit-identical while argsort drops from O(N^2 log N) to
+        # O(N^2 + N*kmax*log kmax).
+        if N < kmax + 1:
             raise ValueError("Distance matrix does not have enough neighbors per row.")
-        idx_all = idx_all[:, :kmax + 1]
-        d_all = d_all[:, :kmax + 1]
+        part = np.argpartition(D, kmax, axis=1)[:, :kmax + 1]
+        dpart = np.take_along_axis(D, part, axis=1)
+        order = np.argsort(dpart, axis=1, kind="stable")
+        idx_all = np.take_along_axis(part, order, axis=1)
+        d_all = np.take_along_axis(dpart, order, axis=1)
 
         # ensure self is at column 0
         ar = np.arange(N, dtype=np.int32)
@@ -392,17 +505,8 @@ class CoreSGHDBSCAN:
             self.core_[m] = self.dst_with_self_[:, m].astype(np.float64, copy=False)
         core_kmax = self.core_[kmax]
 
-        # --- kmax-NNG-with-ties from D & core_kmax (same condition as in fit) ---
-        iu, ju = np.triu_indices(N, k=1)
-        cond = (D[iu, ju] <= core_kmax[iu] + self.eps) | (
-            D[iu, ju] <= core_kmax[ju] + self.eps
-        )
-        if np.any(cond):
-            kmax_edges = np.stack(
-                (iu[cond].astype(np.int32), ju[cond].astype(np.int32)), axis=1
-            )
-        else:
-            kmax_edges = np.empty((0, 2), dtype=np.int32)
+        # --- kmax-NNG-with-ties from D & core_kmax (chunked, O(block*N) peak) ---
+        kmax_edges = _kmax_nng_edges_chunked(D, core_kmax, self.eps)
 
         # --- MST_kmax on COMPLETE MRD graph, using D as base distances ---
         mst_kmax_edges = prim_mrd_mst_edges_from_D(D, core_kmax)  # (N-1,2)
@@ -421,6 +525,131 @@ class CoreSGHDBSCAN:
         W_dir = self.dst_no_self_.ravel().astype(np.float64)
         self.A_knn_ = csr_matrix((W_dir, (I_dir, J_dir)), shape=(N, N))
 
+        return self
+
+    # --------------------------------------------------------
+    # FIT (sparse): build CORE-SG from a sparse graph, no dense N x N ever
+    # --------------------------------------------------------
+    def fit_from_sparse_graph(self, S, fill_value: float = 1.0) -> "CoreSGHDBSCAN":
+        """Build CORE-SG *from a sparse dissimilarity graph* ``S`` (N x N)
+        without ever materialising the dense N x N matrix.
+
+        Stored entries of ``S`` are the *real* pairwise dissimilarities; any
+        missing pair is treated as ``fill_value`` (the dense path fills a
+        uniform 1.0 ceiling). This reproduces the clustering of
+        ``fit_from_distance_matrix(dense_fill(S)).run(...)``:
+
+        * core distances are value-identical (m-th smallest real dissimilarity,
+          padded with ``fill_value``);
+        * every real CORE-SG edge is kept with its exact base distance;
+        * the dense path's "under-connected point connects to *everyone* at
+          ``fill_value``" edges are replaced by a minimal set of ``fill_value``
+          bridges over the connected components of the real-edge graph.
+
+        Because every ``fill_value`` link carries the same maximal weight, the
+        single-linkage merges they induce all occur at the top of the
+        dendrogram; the sub-``fill_value`` cluster structure — and therefore the
+        labels — is unchanged (ARI = 1.0 vs the dense path). Only the identity
+        of equal-weight top-level bridge edges may differ.
+
+        After this, call ``run(...)`` exactly as usual.
+        """
+        if S.shape[0] != S.shape[1]:
+            raise ValueError("S must be a square sparse matrix.")
+        N = S.shape[0]
+
+        mlist = np.sort(np.unique(self.min_samples_list)).astype(int)
+        if len(mlist) == 0:
+            raise ValueError("min_samples_list must contain at least one integer.")
+        kmax = int(mlist[-1])
+        if kmax >= N:
+            raise ValueError(f"kmax ({kmax}) must be < N ({N}).")
+
+        self.X_ = None
+        self.D_ = None                     # never materialised on the sparse path
+        self.N_ = N
+        self.kmax_ = kmax
+        self.fill_value_ = float(fill_value)
+
+        # 1) symmetric real edges (i<j), value = min over the two directions
+        er, ec, ed = _symmetric_real_edges(S, fill_value)
+
+        # 2) self-inclusive kNN tables + core distances (value-identical to dense)
+        idx_ws, dst_ws = _knn_core_from_edges(er, ec, ed, N, kmax, fill_value)
+        self.idx_with_self_ = idx_ws
+        self.dst_with_self_ = dst_ws
+        self.idx_no_self_ = idx_ws[:, 1:]
+        self.dst_no_self_ = dst_ws[:, 1:]
+        self.core_.clear()
+        for m in mlist:
+            self.core_[int(m)] = dst_ws[:, int(m)].astype(np.float64, copy=False)
+        core_kmax = self.core_[kmax]
+
+        # 3) kmax-NNG-with-ties restricted to REAL edges (identical condition;
+        #    non-edges are all == fill_value and only ever bridge components).
+        if ed.size:
+            keep_knn = (ed <= core_kmax[er] + self.eps) | (ed <= core_kmax[ec] + self.eps)
+        else:
+            keep_knn = np.zeros(0, dtype=bool)
+
+        # 4) MST_kmax over the real-edge MRD graph (SciPy). Real edges chosen by
+        #    the MST are kept even if they failed the kNN condition.
+        if ed.size:
+            mrd = np.maximum(np.maximum(core_kmax[er], core_kmax[ec]), ed)
+            G = coo_matrix(
+                (np.concatenate([mrd, mrd]),
+                 (np.concatenate([er, ec]), np.concatenate([ec, er]))),
+                shape=(N, N),
+            )
+            mst = csgraph.minimum_spanning_tree(G).tocoo()
+            mu = np.minimum(mst.row, mst.col).astype(np.int64)
+            mv = np.maximum(mst.row, mst.col).astype(np.int64)
+            eid = er.astype(np.int64) * N + ec.astype(np.int64)
+            mid = mu * N + mv
+            is_mst = np.isin(eid, mid)
+        else:
+            is_mst = np.zeros(0, dtype=bool)
+
+        real_keep = keep_knn | is_mst
+        rer = er[real_keep].astype(np.int32)
+        rec = ec[real_keep].astype(np.int32)
+        red = ed[real_keep].astype(np.float64)
+
+        # 5) connected components of the kept real-edge graph, then bridge every
+        #    component (including isolated singletons) with one fill_value edge.
+        if rer.size:
+            Gc = coo_matrix((np.ones(rer.shape[0]), (rer, rec)), shape=(N, N))
+        else:
+            Gc = coo_matrix((N, N))
+        ncomp, comp = csgraph.connected_components(Gc, directed=False)
+        if ncomp > 1:
+            # one representative node per component (first occurrence)
+            order_c = np.argsort(comp, kind="stable")
+            comp_sorted = comp[order_c]
+            first = np.ones(comp_sorted.shape[0], dtype=bool)
+            first[1:] = comp_sorted[1:] != comp_sorted[:-1]
+            reps = order_c[first]
+            ba, bb = reps[:-1], reps[1:]           # chain the representatives
+            bi = np.minimum(ba, bb).astype(np.int32)
+            bj = np.maximum(ba, bb).astype(np.int32)
+            bridge_base = np.full(bi.shape[0], float(fill_value), dtype=np.float64)
+        else:
+            bi = np.empty(0, dtype=np.int32)
+            bj = np.empty(0, dtype=np.int32)
+            bridge_base = np.empty(0, dtype=np.float64)
+
+        # 6) assemble CORE-SG edges + aligned per-edge base distances
+        all_i = np.concatenate([rer, bi])
+        all_j = np.concatenate([rec, bj])
+        all_b = np.concatenate([red, bridge_base])
+        order = np.lexsort((all_j, all_i))          # canonical (i, j) order
+        self.edges_ut_ = np.stack([all_i[order], all_j[order]], axis=1).astype(np.int32)
+        self.edge_base_ = all_b[order].astype(np.float64)
+        print(f"[CORE-SG] (sparse) CORE-SG graph has {self.edges_ut_.shape[0]} edges "
+              f"({int(rer.size)} real + {int(bi.size)} bridges) across {int(ncomp)} component(s)")
+
+        # A_knn_ is unused on the sparse path (edge_base_ drives run()).
+        self.A_knn_ = None
         return self
 
 
@@ -453,44 +682,31 @@ class CoreSGHDBSCAN:
 
 
     def model(self, min_samples):
-        if not self.save_models:
-            raise ValueError(
-                "Models were not saved. Initialize with save_models=True to access models_[min_samples]."
-            )
-        if min_samples not in self.models_:
-            raise KeyError(f"min_samples={min_samples} not found in saved models.")
         return self.models_[min_samples]
-        
     # --------------------------------------------------------
     # RUN: per-m MST on CORE-SG graph + generic pipeline
     # --------------------------------------------------------
     def run(self,
             cluster_selection_method: str = "eom",
             allow_single_cluster: bool = False,
-            match_reference_implementation: bool = False,
-            cluster_selection_epsilon: float = 0.0) -> "CoreSGHDBSCAN":
-        """
-        Run Core-SG clustering for all requested ``min_samples`` values.
-        
-        Stores
-        ------
-        models_ : dict
-            Saved per-``m`` models when ``save_models=True``.
-        condensed_trees_ : dict
-            Condensed tree objects for all fitted ``m`` values.
-        labels_by_m_ : dict
-            Stored labels for all fitted ``m`` values.
-        """
+            match_reference_implementation: bool = True,
+            cluster_selection_epsilon: float = 0.0,
+            foscx_settings=None) -> "CoreSGHDBSCAN":
+        # ``foscx_settings`` is accepted for API compatibility with the graph
+        # wrapper; the generic HDBSCAN pipeline below does not use it.
 
-        if self.D_ is None or self.edges_ut_ is None or not self.core_:
-            raise RuntimeError("Call fit(X) before run().")
+        if self.edges_ut_ is None or not self.core_:
+            raise RuntimeError("Call fit(X) / fit_from_distance_matrix(D) / "
+                               "fit_from_sparse_graph(S) before run().")
+        if self.D_ is None and self.edge_base_ is None:
+            raise RuntimeError("No base distances available: call a fit_* method before run().")
 
         self.models_.clear()
         self.msts_.clear()
         self.mst_times_.clear()
         self.times_.clear()
-        self.condensed_trees_.clear()
         self.labels_by_m_.clear()
+        self.condensed_trees_.clear()
 
         N = self.N_
         D = self.D_
@@ -498,12 +714,19 @@ class CoreSGHDBSCAN:
         i_idx = edges[:, 0]
         j_idx = edges[:, 1]
 
+        # Per-edge base dissimilarity is loop-invariant across m: compute it
+        # once. The sparse path precomputes it exactly as self.edge_base_; the
+        # dense path derives it from the kNN tables / D a single time here.
+        if self.edge_base_ is not None:
+            base = self.edge_base_
+        else:
+            base = self._base_distance_from_tables_or_D(i_idx, j_idx)
+
         for m in sorted(np.unique(self.min_samples_list)):
             core_m = self.core_[int(m)]
 
-            # --- reweight edges with MRD_m via your base-distance scheme ---
+            # --- reweight edges with MRD_m (base precomputed, loop-invariant) ---
             t0 = time.time()
-            base = self._base_distance_from_tables_or_D(i_idx, j_idx)
             w_ut = np.maximum.reduce([core_m[i_idx], core_m[j_idx], base])
 
             # build symmetric sparse graph and MST
@@ -548,14 +771,10 @@ class CoreSGHDBSCAN:
                 condensed_tree_array=condensed_tree_array,
                 single_linkage_tree=single_linkage_tree,
             )
-            
+            self.models_[int(m)] = model
+            self.times_[int(m)] = mst_time + (t2 - t1)
             self.labels_by_m_[int(m)] = labels
             self.condensed_trees_[int(m)] = model.condensed_tree_
-            
-            if self.save_models:
-                self.models_[int(m)] = model
-            
-            self.times_[int(m)] = mst_time + (t2 - t1)
 
             print(f"[CORE-SG] m={m:2d}: MST+tree+labels in {self.times_[int(m)]:.4f}s")
 
@@ -563,23 +782,16 @@ class CoreSGHDBSCAN:
 
 
     # convenience plotting for one m
-
     def plot_condensed_tree(self, m: int, figsize=(8, 5)):
         import matplotlib.pyplot as plt
-    
-        if m in self.condensed_trees_:
-            ct = self.condensed_trees_[m]
-        elif m in self.models_:
-            ct = self.models_[m].condensed_tree_
-        else:
-            raise KeyError(f"m={m} not found in CORE-SG results.")
-    
-        if ct is None:
+        if m not in self.models_:
+            raise KeyError(f"m={m} not in CORE-SG models.")
+        model = self.models_[m]
+        if model.condensed_tree_ is None:
             print(f"No condensed tree for CORE-SG m={m}")
             return
-    
         plt.figure(figsize=figsize)
-        ct.plot(select_clusters=False, label_clusters=False)
+        model.condensed_tree_.plot(select_clusters=True, label_clusters=True)
         plt.title(f"CORE-SG Condensed Tree (min_samples = {m})")
         plt.show()
 
@@ -588,20 +800,6 @@ class CoreSGHDBSCAN:
 # Helper: plot condensed tree for any model dict
 # ===========================================
 def plot_condensed_tree_for_m(models_dict, m: int, title_prefix: str = "", figsize=(8, 5)):
-    """
-    Plot the condensed tree for a selected fitted ``min_samples`` value.
-
-    Parameters
-    ----------
-    model : CoreSGHDBSCAN or GraphCoreSGHDBSCAN
-        Fitted clustering object.
-    m : int
-        Selected ``min_samples`` value.
-
-    Returns
-    -------
-    None
-    """
     import matplotlib.pyplot as plt
     if m not in models_dict:
         raise KeyError(f"m={m} not found in models_dict")
@@ -613,7 +811,7 @@ def plot_condensed_tree_for_m(models_dict, m: int, title_prefix: str = "", figsi
         return
 
     plt.figure(figsize=figsize)
-    ct.plot(select_clusters=False, label_clusters=False)
+    ct.plot(select_clusters=True, label_clusters=True)
     if title_prefix:
         plt.title(f"{title_prefix} Condensed Tree (min_samples = {m})")
     else:
