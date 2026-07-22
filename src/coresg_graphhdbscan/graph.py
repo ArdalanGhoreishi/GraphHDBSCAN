@@ -622,6 +622,32 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
     # ------------------------------------------------------------------
     # Initial similarity graph -- sparse (fast path) and nx (compat)
     # ------------------------------------------------------------------
+
+
+    def _hybrid_knn_distances(self, distances_full):
+        """Cosine distances between the rows of ``distances_full``.
+
+        Only used by ``metric='hybrid_euclidean_cosine'``. This is exactly the
+        space ``kneighbors_graph(distances_full, metric='cosine')`` searches in
+        the ``sc_gauss`` / ``jaccard_phenograph`` branches, materialised once so
+        that ``sc_umap`` -- which needs a dense matrix -- searches the same one.
+
+        Cached because it depends only on ``distances_full``, not on
+        ``n_neighbors``; the ``heuristic_connect`` loop therefore pays for it
+        once rather than once per iteration.
+        """
+        cached = self._hybrid_knn_distances_
+        if cached is not None and cached.shape == distances_full.shape:
+            return cached
+
+        knn_source = pairwise_distances(distances_full, metric='cosine')
+        # cosine_distances already zeroes the diagonal for X is Y; be explicit
+        # so that _get_indices_distances_from_dense_matrix always finds self
+        # in column 0.
+        np.fill_diagonal(knn_source, 0.0)
+        self._hybrid_knn_distances_ = knn_source
+        return knn_source
+
     @_timeit
     def _create_similarity_sparse(self, data, distances_full=None):
         """Build the initial similarity graph as a scipy sparse matrix.
@@ -652,12 +678,12 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         if self.metric == 'hybrid_euclidean_cosine':
             if distances_full is None:
                 distances_full = pairwise_distances(X, metric='euclidean')
-            knn_metric = 'cosine'
+                # A fresh base matrix invalidates the derived cosine matrix.
+                self._hybrid_knn_distances_ = None
             use_precomputed_knn = False
         else:
             if distances_full is None:
                 distances_full = pairwise_distances(X, metric=self.metric, **self.metric_kwds)
-            knn_metric = 'precomputed'
             use_precomputed_knn = True
 
         self.distances_full_ = distances_full
@@ -696,14 +722,14 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             return sp.csr_matrix(conn).astype(np.float64), n
 
         if self.sim_graph_method == 'sc_umap':
-            if use_precomputed_knn:
-                idx, dists = _get_indices_distances_from_dense_matrix(
-                    distances_full, self.n_neighbors
-                )
-            else:
-                nn = NN(n_neighbors=self.n_neighbors, metric=knn_metric)
-                nn.fit(X)
-                dists, idx = nn.kneighbors(X, return_distance=True)
+            knn_source = (
+                distances_full
+                if use_precomputed_knn
+                else self._hybrid_knn_distances(distances_full)
+            )
+            idx, dists = _get_indices_distances_from_dense_matrix(
+                knn_source, self.n_neighbors
+            )
             conn = sc_umap(idx, dists, n_obs=n, n_neighbors=self.n_neighbors)
             return sp.csr_matrix(conn).astype(np.float64), n
 
