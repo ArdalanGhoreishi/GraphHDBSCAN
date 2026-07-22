@@ -636,7 +636,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         ``n_neighbors``; the ``heuristic_connect`` loop therefore pays for it
         once rather than once per iteration.
         """
-        cached = self._hybrid_knn_distances_
+        cached = getattr(self, '_hybrid_knn_distances_', None)
         if cached is not None and cached.shape == distances_full.shape:
             return cached
 
