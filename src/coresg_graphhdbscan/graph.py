@@ -64,6 +64,10 @@ except Exception:
     prange = range
     _HAS_NUMBA = False
 
+
+# Second-order ("distance-of-distances") metrics. Each point is represented by
+# its full distance profile, and the second metric is applied to those profiles.
+#   name -> (metric for the full distance matrix, metric applied to its ROWS)
 _SECOND_ORDER_METRICS = {
     'hybrid_euclidean_cosine': ('euclidean', 'cosine'),
     'euclidean_ii':            ('euclidean', 'euclidean'),
@@ -294,7 +298,6 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         else:
             # Second-order metrics cluster on their base (first-order) distances.
             core_metric = _SECOND_ORDER_METRICS.get(metric, (metric,))[0]
-          
         super().__init__(
             min_samples_list=self.m_list,
             metric=core_metric,
@@ -302,6 +305,11 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             save_models=self.save_models,
             **kwargs
         )
+        # CoreSGHDBSCAN is a @dataclass: its generated __init__ assigns
+        # self.metric = core_metric, clobbering the user-facing metric set
+        # above. Restore it -- _create_similarity_sparse dispatches on it.
+        self.metric = metric
+        self.core_metric_ = core_metric
         self.min_cluster_size = resolved_min_cluster_size
 
     def __repr__(self):
