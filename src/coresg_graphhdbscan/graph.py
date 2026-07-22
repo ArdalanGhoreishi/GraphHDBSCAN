@@ -64,6 +64,12 @@ except Exception:
     prange = range
     _HAS_NUMBA = False
 
+_SECOND_ORDER_METRICS = {
+    'hybrid_euclidean_cosine': ('euclidean', 'cosine'),
+    'euclidean_ii':            ('euclidean', 'euclidean'),
+    'cosine_ii':               ('cosine',    'cosine'),
+}
+
 
 def _optional_import(module_name, package_name=None):
     try:
@@ -198,6 +204,8 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             'sqeuclidean',
             'yule',
             'hybrid_euclidean_cosine',
+            'euclidean_ii',
+            'cosine_ii',
         }
 
         if not isinstance(metric, str) and not callable(metric):
@@ -281,7 +289,12 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
 
         resolved_min_cluster_size = None if min_cluster_size is None else int(min_cluster_size)
 
-        core_metric = 'euclidean' if (metric == 'hybrid_euclidean_cosine' or callable(metric)) else metric
+        if callable(metric):
+            core_metric = 'euclidean'
+        else:
+            # Second-order metrics cluster on their base (first-order) distances.
+            core_metric = _SECOND_ORDER_METRICS.get(metric, (metric,))[0]
+          
         super().__init__(
             min_samples_list=self.m_list,
             metric=core_metric,
@@ -624,28 +637,29 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
     # ------------------------------------------------------------------
 
 
-    def _hybrid_knn_distances(self, distances_full):
-        """Cosine distances between the rows of ``distances_full``.
+    def _second_order_knn_distances(self, distances_full, knn_metric):
+        """``knn_metric`` distances between the ROWS of ``distances_full``.
 
-        Only used by ``metric='hybrid_euclidean_cosine'``. This is exactly the
-        space ``kneighbors_graph(distances_full, metric='cosine')`` searches in
-        the ``sc_gauss`` / ``jaccard_phenograph`` branches, materialised once so
-        that ``sc_umap`` -- which needs a dense matrix -- searches the same one.
+        Used by the metrics in ``_SECOND_ORDER_METRICS``. This is exactly the
+        space ``kneighbors_graph(distances_full, metric=knn_metric)`` searches
+        in the ``sc_gauss`` / ``jaccard_phenograph`` branches, materialised
+        densely because ``sc_umap`` needs a full matrix.
 
-        Cached because it depends only on ``distances_full``, not on
-        ``n_neighbors``; the ``heuristic_connect`` loop therefore pays for it
-        once rather than once per iteration.
+        Cached: it depends only on ``distances_full`` and ``knn_metric``, not on
+        ``n_neighbors``, so the ``heuristic_connect`` loop pays for it once
+        rather than once per iteration.
         """
-        cached = getattr(self, '_hybrid_knn_distances_', None)
-        if cached is not None and cached.shape == distances_full.shape:
-            return cached
+        cached = getattr(self, '_second_order_knn_', None)
+        if (cached is not None
+                and cached[0] == knn_metric
+                and cached[1].shape == distances_full.shape):
+            return cached[1]
 
-        knn_source = pairwise_distances(distances_full, metric='cosine')
-        # cosine_distances already zeroes the diagonal for X is Y; be explicit
-        # so that _get_indices_distances_from_dense_matrix always finds self
-        # in column 0.
+        knn_source = pairwise_distances(distances_full, metric=knn_metric)
+        # sklearn already zeroes the diagonal when X is Y; be explicit so that
+        # _get_indices_distances_from_dense_matrix always finds self in col 0.
         np.fill_diagonal(knn_source, 0.0)
-        self._hybrid_knn_distances_ = knn_source
+        self._second_order_knn_ = (knn_metric, knn_source)
         return knn_source
 
     @_timeit
@@ -675,13 +689,16 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         if X.ndim != 2:
             raise ValueError("Input data must be a 2D array-like object.")
 
-        if self.metric == 'hybrid_euclidean_cosine':
+        second_order = _SECOND_ORDER_METRICS.get(self.metric)
+        if second_order is not None:
+            base_metric, knn_metric = second_order
             if distances_full is None:
-                distances_full = pairwise_distances(X, metric='euclidean')
-                # A fresh base matrix invalidates the derived cosine matrix.
-                self._hybrid_knn_distances_ = None
+                distances_full = pairwise_distances(X, metric=base_metric)
+                # A fresh base matrix invalidates the derived second-order one.
+                self._second_order_knn_ = None
             use_precomputed_knn = False
         else:
+            knn_metric = None
             if distances_full is None:
                 distances_full = pairwise_distances(X, metric=self.metric, **self.metric_kwds)
             use_precomputed_knn = True
@@ -694,7 +711,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
                 distances_full,
                 n_neighbors=self.n_neighbors - 1,
                 mode='distance',
-                metric='precomputed' if use_precomputed_knn else 'cosine',
+                metric='precomputed' if use_precomputed_knn else knn_metric,
                 include_self=False,
             )
 
@@ -715,7 +732,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
                 distances_full,
                 n_neighbors=self.n_neighbors - 1,
                 mode='distance',
-                metric='precomputed' if use_precomputed_knn else 'cosine',
+                metric='precomputed' if use_precomputed_knn else knn_metric,
                 include_self=False,
             )
             conn = sc_gauss(knn_dist, n_neighbors=self.n_neighbors, knn=True)
@@ -725,7 +742,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             knn_source = (
                 distances_full
                 if use_precomputed_knn
-                else self._hybrid_knn_distances(distances_full)
+                else self._second_order_knn_distances(distances_full, knn_metric)
             )
             idx, dists = _get_indices_distances_from_dense_matrix(
                 knn_source, self.n_neighbors
