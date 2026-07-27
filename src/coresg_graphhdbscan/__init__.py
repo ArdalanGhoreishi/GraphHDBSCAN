@@ -24,6 +24,8 @@ __all__ = [
     "GraphCoreSGHDBSCAN",
     "CoreSGHDBSCAN",
     "CoreSGModel",
+    "plot_condensed_tree_ground_truth_pies",
+    "resolve_condensed_tree",
 ]
 
 __version__ = "0.2.0-optimized"
