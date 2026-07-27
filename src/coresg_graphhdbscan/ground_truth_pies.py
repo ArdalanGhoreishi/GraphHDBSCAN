@@ -3,15 +3,6 @@
 This module adds a plotting utility that overlays a ground-truth composition
 pie chart at every cluster node of a condensed tree.
 
-Unlike a plain ``hdbscan.HDBSCAN`` estimator, which exposes a single
-``condensed_tree_``, the estimators in this package
-(:class:`~coresg_graphhdbscan.CoreSGHDBSCAN` and
-:class:`~coresg_graphhdbscan.GraphCoreSGHDBSCAN`) fit one condensed tree per
-``min_samples`` value and store them in ``condensed_trees_[m]``. The helper
-below is therefore "adaptive": you select which tree to draw by passing the
-``m`` (``min_samples``) value, exactly as you already do with
-``plot_condensed_tree(m)``.
-
 The function accepts, transparently, any of:
 
 * a fitted :class:`GraphCoreSGHDBSCAN` / :class:`CoreSGHDBSCAN` estimator
