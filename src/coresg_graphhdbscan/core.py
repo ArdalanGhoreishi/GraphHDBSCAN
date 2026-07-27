@@ -796,6 +796,43 @@ class CoreSGHDBSCAN:
         plt.show()
 
 
+    def plot_condensed_tree_ground_truth_pies(
+        self, m, y_true, *, figsize=(16, 10), **kwargs
+    ):
+        """Condensed tree for ``min_samples=m`` with ground-truth pies.
+
+        See
+        :func:`~coresg_graphhdbscan.plot_condensed_tree_ground_truth_pies`
+        for the full list of keyword options.
+
+        Parameters
+        ----------
+        m : int
+            The ``min_samples`` value selecting which condensed tree to draw.
+        y_true : array-like, shape (n_samples,)
+            Ground-truth labels aligned row-for-row with the fitted data.
+        figsize : tuple, default=(16, 10)
+            Figure size.
+
+        Returns
+        -------
+        fig, ax
+        """
+        from .ground_truth_pies import (
+            plot_condensed_tree_ground_truth_pies as _pies,
+        )
+
+        if int(m) not in self.models_:
+            raise KeyError(f"m={m} not in CORE-SG models.")
+
+        return _pies(
+            self,
+            y_true,
+            m=int(m),
+            figsize=figsize,
+            **kwargs,
+        )
+
 # ===========================================
 # Helper: plot condensed tree for any model dict
 # ===========================================
