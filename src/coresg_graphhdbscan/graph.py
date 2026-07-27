@@ -1261,6 +1261,51 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         plt.title(f"CORE-SG Condensed Tree (min_samples = {m})")
         plt.show()
 
+
+
+    def plot_condensed_tree_ground_truth_pies(
+        self, m, y_true, *, figsize=(16, 10), **kwargs
+    ):
+        """Condensed tree for ``min_samples=m`` with ground-truth pies.
+
+        Overlays a pie chart of the ground-truth class composition at every
+        cluster node of the condensed tree fitted for the selected
+        ``min_samples`` value.
+
+        Parameters
+        ----------
+        m : int
+            The ``min_samples`` value selecting which condensed tree to draw.
+        y_true : array-like, shape (n_samples,)
+            Ground-truth labels aligned row-for-row with the data passed to
+            ``fit(...)``.
+        figsize : tuple, default=(16, 10)
+            Figure size.
+        **kwargs
+            Forwarded to
+            :func:`~coresg_graphhdbscan.plot_condensed_tree_ground_truth_pies`
+            (e.g. ``min_node_size``, ``label_cmap``, ``show_node_ids``).
+
+        Returns
+        -------
+        fig, ax
+        """
+        from .ground_truth_pies import (
+            plot_condensed_tree_ground_truth_pies as _pies,
+        )
+
+        if not hasattr(self, "coresg_") or self.coresg_ is None:
+            raise ValueError("Model is not fitted yet. Call fit(...) first.")
+
+        return _pies(
+            self.coresg_,
+            y_true,
+            m=int(m),
+            figsize=figsize,
+            **kwargs,
+        )
+
+    
     def interactive_condensed_tree(self, figsize=(10, 6)):
         """Interactive condensed tree explorer across fitted ``min_samples`` values."""
         try:
