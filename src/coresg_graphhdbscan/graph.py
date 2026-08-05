@@ -161,7 +161,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
                 sim_graph_method='sc_umap',
                 metric='euclidean',
                 metric_kwds=None,
-                add_neighbor=True,
+                add_neighbor=False,
                 no_noise=True,
                 n_neighbors=15,
                 heuristic_connect=False,
