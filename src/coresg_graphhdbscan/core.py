@@ -4,7 +4,7 @@ import time
 import warnings
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
-
+from ._outliers import glosh_from_condensed_tree
 import numpy as np
 import hdbscan
 from scipy.spatial.distance import pdist, squareform
@@ -276,6 +276,13 @@ class CoreSGModel:
         self.condensed_tree_ = _CondensedTree(condensed_tree_array, labels)
         self.single_linkage_tree_ = _SingleLinkageTree(single_linkage_tree)
 
+
+    @property
+    def outlier_scores_(self) -> np.ndarray:
+        """GLOSH scores for this model's condensed hierarchy (cached)."""
+        if not hasattr(self, "_outlier_scores"):
+            self._outlier_scores = glosh_from_condensed_tree(self.condensed_tree_)
+        return self._outlier_scores
 
 # ===========================================
 # CORE-SG generic with fast MST logic
@@ -781,6 +788,35 @@ class CoreSGHDBSCAN:
         return self
 
 
+    def outlier_scores_for(self, min_samples) -> np.ndarray:
+        """Return GLOSH scores for a fitted min_samples value."""
+        m = int(min_samples)
+        if m not in self.models_:
+            raise KeyError(
+                f"min_samples={m} was not fitted. "
+                f"Available values: {sorted(self.models_)}"
+            )
+        return self.models_[m].outlier_scores_
+
+    @property
+    def outlier_scores_by_m_(self) -> dict:
+        """GLOSH arrays keyed by fitted min_samples value."""
+        return {m: self.models_[m].outlier_scores_ for m in sorted(self.models_)}
+
+    @property
+    def outlier_scores_(self) -> np.ndarray:
+        """GLOSH scores when exactly one min_samples value was fitted."""
+        ms = sorted(self.models_)
+        if not ms:
+            raise AttributeError("No fitted model is available. Call fit/run first.")
+        if len(ms) == 1:
+            return self.models_[ms[0]].outlier_scores_
+        raise AttributeError(
+            "Multiple min_samples values were fitted; "
+            "use outlier_scores_for(m) or outlier_scores_by_m_."
+        )
+    
+    
     # convenience plotting for one m
     def plot_condensed_tree(self, m: int, figsize=(8, 5)):
         import matplotlib.pyplot as plt
