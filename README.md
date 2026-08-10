@@ -246,7 +246,6 @@ Parameter overview:
 - `n_neighbors`: controls the neighborhood size used during similarity graph construction.
 - `heuristic_connect`: controls whether a heuristic graph-connection step is used.
 - `min_cluster_size`: minimum cluster size. If omitted, it defaults to the corresponding `min_samples` value.
-- `save_models`: controls whether intermediate models are stored.
 - `similarity_backend`: backend used for similarity graph construction.
 
 ## Notes
