@@ -469,76 +469,76 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         return g
 
   def mrd_graph_for(self, m):
-      """
-      Return the sparse mutual-reachability graph for min_samples=m.
-  
-      The graph is defined on the CORE-SG edge set. Each edge (i, j) has
-      weight
-  
-          MRD_m(i, j) = max(
-              core_m[i],
-              core_m[j],
-              d_WSS(i, j)
-          )
-  
-      Returns
-      -------
-      scipy.sparse.csr_matrix
-          Symmetric sparse MRD graph.
-      """
-      if not hasattr(self, "coresg_") or self.coresg_ is None:
-          raise RuntimeError("Call fit(...) before mrd_graph_for(...).")
-  
-      cs = self.coresg_
-      m = int(m)
-  
-      if m not in cs.core_:
-          raise KeyError(
-              f"m={m} was not fitted. "
-              f"Available values: {sorted(cs.core_.keys())}"
-          )
-  
-      if cs.edges_ut_ is None:
-          raise RuntimeError("CORE-SG graph has not been constructed.")
-  
-      # CORE-SG undirected edges, stored once with i < j
-      i = cs.edges_ut_[:, 0]
-      j = cs.edges_ut_[:, 1]
-  
-      # Base distance = WSS dissimilarity in GraphHDBSCAN
-      if cs.edge_base_ is not None:
-          # Sparse fit path
-          base = cs.edge_base_
-      else:
-          # Dense/precomputed fallback path
-          base = cs._base_distance_from_tables_or_D(i, j)
-  
-      # m-specific core distances
-      core = cs.core_[m]
-  
-      # Mutual-reachability distance
-      mrd = np.maximum.reduce([
-          core[i],
-          core[j],
-          base,
-      ])
-  
-      n = cs.N_
-  
-      # Make the graph symmetric
-      G = sp.coo_matrix(
-          (
-              np.concatenate([mrd, mrd]),
-              (
-                  np.concatenate([i, j]),
-                  np.concatenate([j, i]),
-              ),
-          ),
-          shape=(n, n),
-          dtype=np.float64,
-      ).tocsr()
-  
-      return G
+        """
+        Return the sparse mutual-reachability graph for min_samples=m.
+    
+        The graph is defined on the CORE-SG edge set. Each edge (i, j) has
+        weight
+    
+            MRD_m(i, j) = max(
+                core_m[i],
+                core_m[j],
+                d_WSS(i, j)
+            )
+    
+        Returns
+        -------
+        scipy.sparse.csr_matrix
+            Symmetric sparse MRD graph.
+        """
+        if not hasattr(self, "coresg_") or self.coresg_ is None:
+            raise RuntimeError("Call fit(...) before mrd_graph_for(...).")
+    
+        cs = self.coresg_
+        m = int(m)
+    
+        if m not in cs.core_:
+            raise KeyError(
+                f"m={m} was not fitted. "
+                f"Available values: {sorted(cs.core_.keys())}"
+            )
+    
+        if cs.edges_ut_ is None:
+            raise RuntimeError("CORE-SG graph has not been constructed.")
+    
+        # CORE-SG undirected edges, stored once with i < j
+        i = cs.edges_ut_[:, 0]
+        j = cs.edges_ut_[:, 1]
+    
+        # Base distance = WSS dissimilarity in GraphHDBSCAN
+        if cs.edge_base_ is not None:
+            # Sparse fit path
+            base = cs.edge_base_
+        else:
+            # Dense/precomputed fallback path
+            base = cs._base_distance_from_tables_or_D(i, j)
+    
+        # m-specific core distances
+        core = cs.core_[m]
+    
+        # Mutual-reachability distance
+        mrd = np.maximum.reduce([
+            core[i],
+            core[j],
+            base,
+        ])
+    
+        n = cs.N_
+    
+        # Make the graph symmetric
+        G = sp.coo_matrix(
+            (
+                np.concatenate([mrd, mrd]),
+                (
+                    np.concatenate([i, j]),
+                    np.concatenate([j, i]),
+                ),
+            ),
+            shape=(n, n),
+            dtype=np.float64,
+        ).tocsr()
+    
+        return G
   
     def _min_cluster_size_for(self, m):
         m = int(m)
