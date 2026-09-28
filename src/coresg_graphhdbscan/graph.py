@@ -468,7 +468,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         g.add_weighted_edges_from(zip(T.row.tolist(), T.col.tolist(), T.data.tolist()))
         return g
 
-  def mrd_graph_for(self, m):
+    def mrd_graph_for(self, m):
         """
         Return the sparse mutual-reachability graph for min_samples=m.
     
