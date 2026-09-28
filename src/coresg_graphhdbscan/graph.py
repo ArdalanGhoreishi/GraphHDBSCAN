@@ -445,6 +445,29 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             print(f"[TIMER] mst_graph_ (lazy build): {time.perf_counter() - _t0:.4f}s")
         return self._mst_graph_cache
 
+    def mrd_mst_graph_for(self, m):
+        """MST of the mutual-reachability graph MRD_m, used for noise propagation.
+
+        Built on the CoreSG edges, which contain an MST of the complete MRD_m
+        graph (no dense N x N). Equal MRD_m weights are very common, so ties are
+        broken by the WSS dissimilarity rather than by row order. Edge weights are
+        the rank of (MRD_m, WSS); the propagation only compares them by order.
+        """
+        cs = self.coresg_
+        i, j = cs.edges_ut_[:, 0], cs.edges_ut_[:, 1]
+        base = cs.edge_base_ if cs.edge_base_ is not None else cs._base_distance_from_tables_or_D(i, j)
+        core = cs.core_[int(m)]
+        mrd = np.maximum(np.maximum(core[i], core[j]), base)
+        rank = np.empty(len(i), dtype=np.float64)
+        rank[np.lexsort((base, mrd))] = np.arange(1, len(i) + 1)
+        n = cs.N_
+        W = sp.coo_matrix((np.r_[rank, rank], (np.r_[i, j], np.r_[j, i])), shape=(n, n))
+        T = minimum_spanning_tree(W.tocsr()).tocoo()
+        g = nx.Graph()
+        g.add_nodes_from(range(n))
+        g.add_weighted_edges_from(zip(T.row.tolist(), T.col.tolist(), T.data.tolist()))
+        return g
+    
     def _min_cluster_size_for(self, m):
         m = int(m)
         return m if self.min_cluster_size is None else int(self.min_cluster_size)
@@ -993,7 +1016,8 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         Parameters
         ----------
         mst_graph : networkx.Graph
-            Minimum spanning tree of the final connected WSS graph.
+            Minimum spanning tree of the mutual-reachability graph for the
+            relevant ``min_samples`` (see :meth:`mrd_mst_graph_for`).
         labels0 : ndarray
             Initial labels with noise marked as -1.
         c : int, default=5
@@ -1274,11 +1298,12 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
         labels = self.coresg_.labels_by_m_[int(m)]
 
         if self.no_noise:
+            tree = self.mrd_mst_graph_for(m)
             if isinstance(labels[0], np.int64):
-                labels = self.reassign_noise_via_mst(self.mst_graph_, labels, c=c)
+                labels = self.reassign_noise_via_mst(tree, labels, c=c)
             else:
                 for i, labs in enumerate(labels):
-                    labels[i] = self.reassign_noise_via_mst(self.mst_graph_, labs, c=c)
+                    labels[i] = self.reassign_noise_via_mst(tree, labs, c=c)
 
         return labels
 
@@ -1315,11 +1340,12 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
             no_noise = self.no_noise
 
         if no_noise:
+            tree = self.mrd_mst_graph_for(m)
             if isinstance(labels[0], np.int64):
-                labels = self.reassign_noise_via_mst(self.mst_graph_, labels, c=c)
+                labels = self.reassign_noise_via_mst(tree, labels, c=c)
             else:
                 for i, labs in enumerate(labels):
-                    labels[i] = self.reassign_noise_via_mst(self.mst_graph_, labs, c=c)
+                    labels[i] = self.reassign_noise_via_mst(tree, labs, c=c)
 
         return labels
 
