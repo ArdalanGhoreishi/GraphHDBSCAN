@@ -158,7 +158,7 @@ class GraphCoreSGHDBSCAN(CoreSGHDBSCAN):
     def __init__(
                 self,
                 min_samples=list(range(2, 31)),
-                sim_graph_method='sc_umap',
+                sim_graph_method='jaccard_phenograph',
                 metric='euclidean',
                 metric_kwds=None,
                 add_neighbor=True,
