@@ -30,7 +30,7 @@ A good default starting point for many datasets is:
 
    model = GraphCoreSGHDBSCAN(
        min_samples=10,
-       sim_graph_method="sc_umap",
+       sim_graph_method="jaccard_phenograph",
        metric="euclidean",
        n_neighbors=15,
        no_noise=True,
@@ -57,7 +57,7 @@ The public constructor is:
 
    GraphCoreSGHDBSCAN(
        min_samples=10,
-       sim_graph_method="sc_umap",
+       sim_graph_method="jaccard_phenograph",
        metric="euclidean",
        metric_kwds=None,
        add_neighbor=True,
@@ -81,10 +81,10 @@ At-a-glance reference
      - Default
      - Practical meaning
    * - ``min_samples``
-     - ``10``
+     - ``[2-30]``
      - Controls the smoothness of the density estimates as a single level or within an entire range.
    * - ``sim_graph_method``
-     - ``"sc_umap"``
+     - ``"jaccard_phenograph"``
      - Chooses how the similarity graph is built.
    * - ``metric``
      - ``"euclidean"``
@@ -120,7 +120,7 @@ How to choose each parameter
 ``min_samples``
 ^^^^^^^^^^^^^^^
 
-Default: ``10``
+Default: ``[2-30]``
 
 This is the main clustering hyperparameter. It may be:
 
@@ -164,7 +164,7 @@ Example:
 ``sim_graph_method``
 ^^^^^^^^^^^^^^^^^^^^
 
-Default: ``"sc_umap"``
+Default: ``"jaccard_phenograph"``
 
 This parameter chooses the graph-construction backend.
 
@@ -178,13 +178,13 @@ Supported values are:
 Choosing a method:
 
 ``sc_umap``
-   Good default choice. Uses Scanpy's UMAP-style connectivity routine.
+   Uses Scanpy's UMAP-style connectivity routine.
 
 ``sc_gauss``
    Useful when you want Scanpy's Gaussian connectivity construction.
 
 ``jaccard_phenograph``
-   Useful when you want a PhenoGraph-style Jaccard neighborhood graph. The
+   Good default choice. Useful when you want a PhenoGraph-style Jaccard neighborhood graph. The
    backend used for this graph can be controlled with
    ``similarity_backend``. With ``similarity_backend="auto"``, the package uses
    the accelerated ``numba`` backend when available and otherwise falls back to
