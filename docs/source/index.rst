@@ -20,5 +20,6 @@ It leverages the theoretical CORE-SG graph sparsification machinery, enabling ef
    usage
    api
    examples
+   tutorials
    references
    third_party_notices
