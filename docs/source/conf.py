@@ -17,8 +17,10 @@ extensions = [
     "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
     "myst_nb",
+    "sphinxcontrib.bibtex"
 ]
-
+bibtex_bibfiles = ["refs.bib"]
+bibtex_reference_style = "author_year"
 templates_path = ["../_templates"]
 exclude_patterns = []
 
