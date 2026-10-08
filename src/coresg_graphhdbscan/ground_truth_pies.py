@@ -314,6 +314,7 @@ def plot_condensed_tree_ground_truth_pies(
             + normalized * (max_pie_diameter - min_pie_diameter)
         )
 
+    floor = 1.0
     color_map = plt.get_cmap(label_cmap, n_classes)
     class_colors = [color_map(i) for i in range(n_classes)]
 
@@ -324,7 +325,7 @@ def plot_condensed_tree_ground_truth_pies(
         x = (left + right) / 2.0
 
         # The bottom is the lambda value at which this cluster is born.
-        y = bottom
+        y = max(bottom, floor)
 
         counts = node_label_counts(node)
         total = counts.sum()
@@ -419,11 +420,11 @@ def plot_condensed_tree_ground_truth_pies(
     title = "CORE-SG condensed tree with ground-truth composition"
     if m is not None:
         title += f" (min_samples = {int(m)})"
-    ax.set_title(title)
+    ax.set_title(title, pad=max_pie_diameter / 2.0 + 6)
 
     # Start the lambda axis at 1 (= 1/max_eps) and dash the synthetic
     # weight-1 joins that appear when the graph is disconnected.
-    floor = 1.0
+
     for line in ax.get_lines():
         yd = np.asarray(line.get_ydata(), float)
         if yd.size == 2 and np.all(np.isclose(yd, floor, atol=1e-9)):
