@@ -95,7 +95,7 @@ This package uses third-party open-source dependencies, including `hdbscan`, `sc
 
 See `THIRD_PARTY_NOTICES.md` for details.
 
-## Contact
+## 📬 Contact
 
 For questions or support, please open an [issue](https://github.com/Campello-Lab/GraphHDBSCAN/issues) or contact:
 
